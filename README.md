@@ -1,5 +1,4 @@
-# GymkhanaSystem
-Moto Gymkhana Timing System (MGTS)
+# Moto Gymkhana Timing System (MGTS)
 
 モトジムカーナ（バイク競技）のための、NFCエントリー機能付き自動タイム計測システム です。 産業用光電センサーによる高精度な計測と、NFCタグ（運転免許証など）によるスムーズなライダー登録を実現します。
 
