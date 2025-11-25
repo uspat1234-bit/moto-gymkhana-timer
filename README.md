@@ -57,7 +57,7 @@ graph LR
     リポジトリのクローン
     Bash
 
-git clone https://github.com/your-username/moto-gymkhana-timer.git
+git clone https://github.com/uspat1234-bit/moto-gymkhana-timer.git
 cd moto-gymkhana-timer
 
 ライブラリのインストール
