@@ -111,7 +111,7 @@ python launcher.py
     NFCタグ（Suica、免許証、専用タグ）をリーダーにかざすと、ライダー名が登録され「待ち行列（Queue）」に追加されます。
 
 📂 ディレクトリ構造
-
+Bash
 Plaintext
 
 .
