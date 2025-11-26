@@ -1,5 +1,11 @@
 # Moto Gymkhana Timing System (MGTS)
 
+
+![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)
+![Arduino](https://img.shields.io/badge/Arduino-Nano_R4-00979D?logo=arduino&logoColor=white)
+![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green)
+
 モトジムカーナ（バイク競技）のための、**NFCエントリー機能付き自動タイム計測システム** です。
 産業用光電センサーによる高精度な計測と、NFCタグ（運転免許証など）によるスムーズなライダー登録を実現します。
 
@@ -32,68 +38,84 @@ graph LR
     PC_GUI -->|CSV| Local[Local Storage]
     Local -->|Watch| Uploader[drive_uploader.py]
     Uploader -->|API| Cloud[Google Drive]
-📦 インストール
-必要要件
-Python 3.10以上
+```
 
-Arduino IDE (初回書き込み用)
+### 📦 インストール
+## 必要要件
+* Python 3.10以上
+* Arduino IDE (初回書き込み用)
 
-セットアップ手順
-リポジトリのクローン
-
+## セットアップ手順
+1.リポジトリのクローン
+```
 Bash
 
 git clone https://github.com/your-username/moto-gymkhana-timer.git
 cd moto-gymkhana-timer
-ライブラリのインストール
-
+```
+2.ライブラリのインストール
+```
 Bash
 
 pip install -r requirements.txt
 # または
 pip install tk nfcpy pyserial google-api-python-client google-auth-oauthlib pygame
-NFCドライバーの設定 (Windowsのみ)
 
-Zadig を使用して、RC-S380のドライバーを WinUSB に変更してください。
+```
+3.NFCドライバーの設定 (Windowsのみ)
 
-Arduinoの準備
 
-Arduino IDEで arduino_sketch/sensor_firmware.ino を開き、Arduino Nano R4に書き込みます。
+* Zadig を使用して、RC-S380のドライバーを WinUSB に変更してください。
 
-Google Drive設定 (オプション)
+4.Arduinoの準備
 
-Google Cloud ConsoleでAPIを有効化し、client_secret.json をルートディレクトリに配置してください。
 
-🚦 使い方
-ランチャー (launcher.py) を起動すると、全ての機能にアクセスできます。
+* Arduino IDEで arduino_sketch/sensor_firmware.ino を開き、Arduino Nano R4に書き込みます。
 
+5.Google Drive設定 (オプション)
+
+* Google Cloud ConsoleでAPIを有効化し、client_secret.json をルートディレクトリに配置してください。
+
+### 🚦 使い方
+## ランチャー (launcher.py) を起動すると、全ての機能にアクセスできます。
+```
 Bash
 
 python launcher.py
+```
 1. 通常モード (Normal Mode)
-光電センサーによるシンプルなタイム計測。
 
-好きなタイミングでスタートできます。
+* 光電センサーによるシンプルなタイム計測。
 
-複数台のコースイン（追走）に対応。
+
+* 好きなタイミングでスタートできます。
+
+
+* 複数台のコースイン（追走）に対応。
 
 2. シグナルモード (Signal Mode)
-画面上のシグナル（🔴→🟡→🟢）に合わせてスタート。
 
-フライング検知: 緑点灯前にスタートすると FALSE START と表示（計測は続行）。
+* 画面上のシグナル（🔴→🟡→🟢）に合わせてスタート。
 
-リアクションタイム: 緑点灯からスタートまでの反応速度を表示。
 
-2回タッチスタート: 1回目のNFCタッチでエントリー、2回目でシグナル開始。
+* フライング検知: 緑点灯前にスタートすると FALSE START と表示（計測は続行）。
+
+
+* リアクションタイム: 緑点灯からスタートまでの反応速度を表示。
+
+
+* 2回タッチスタート: 1回目のNFCタッチでエントリー、2回目でシグナル開始。
 
 3. NFCエントリー
-remote_entry.py がバックグラウンドで起動します。
 
-NFCタグ（Suica、免許証、専用タグ）をリーダーにかざすと、ライダー名が登録され「待ち行列（Queue）」に追加されます。
+* remote_entry.py がバックグラウンドで起動します。
 
-📂 ディレクトリ構造
+
+* NFCタグ（Suica、免許証、専用タグ）をリーダーにかざすと、ライダー名が登録され「待ち行列（Queue）」に追加されます。
+
+### 📂 ディレクトリ構造
+```
 Plaintext
-
 .
 ├── launcher.py          # 統合ランチャー
 ├── gui_main.py          # 通常モードGUI
@@ -106,5 +128,7 @@ Plaintext
 ├── arduino_sketch/      # Arduino用コード
 │   └── sensor_firmware.ino
 └── gymkhana_data/       # 計測ログ (CSV) 保存先
+```
+
 🤝 Contributing
 バグ報告や機能追加のプルリクエストは大歓迎です！
