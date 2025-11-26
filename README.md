@@ -1,11 +1,6 @@
 # Moto Gymkhana Timing System (MGTS)
 
 
-![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)
-![Arduino](https://img.shields.io/badge/Arduino-Nano_R4-00979D?logo=arduino&logoColor=white)
-![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-green)
-
 モトジムカーナ（バイク競技）のための、**NFCエントリー機能付き自動タイム計測システム** です。
 産業用光電センサーによる高精度な計測と、NFCタグによるスムーズなライダー登録を実現します。
 
