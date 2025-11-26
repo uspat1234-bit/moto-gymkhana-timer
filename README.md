@@ -77,7 +77,7 @@ pip install tk nfcpy pyserial google-api-python-client google-auth-oauthlib pyga
 * Google Cloud ConsoleでAPIを有効化し、client_secret.json をルートディレクトリに配置してください。
 
 ### 🚦 使い方
-## ランチャー (launcher.py) を起動すると、全ての機能にアクセスできます。
+* ランチャー (launcher.py) を起動すると、全ての機能にアクセスできます。
 ```
 Bash
 
