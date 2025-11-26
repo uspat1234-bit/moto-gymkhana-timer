@@ -76,7 +76,21 @@ pip install tk nfcpy pyserial google-api-python-client google-auth-oauthlib pyga
 
 * Google Cloud ConsoleでAPIを有効化し、client_secret.json をルートディレクトリに配置してください。
 
-### 🚦 使い方
+## NFCタグの作成 (Writer Tool)
+* 参加者配布用のタグを作成するためのツールです。
+```
+Bash
+
+python writer.py
+```
+
+1. ライダー名、ID、車両名を入力します。
+
+2. 「書き込み待機中...」と表示されたら、リーダーにタグをセットします。
+
+3. 自動的にメモリクリアと書き込みが行われます。
+
+## 🚦 使い方
 * ランチャー (launcher.py) を起動すると、全ての機能にアクセスできます。
 ```
 Bash
@@ -112,20 +126,6 @@ python launcher.py
 
 
 * NFCタグ（Suica、免許証、専用タグ）をリーダーにかざすと、ライダー名が登録され「待ち行列（Queue）」に追加されます。
-
-### NFCタグの作成 (Writer Tool)
-* 参加者配布用のタグを作成するためのツールです。
-```
-Bash
-
-python writer.py
-```
-
-1. ライダー名、ID、車両名を入力します。
-
-2. 「書き込み待機中...」と表示されたら、リーダーにタグをセットします。
-
-3. 自動的にメモリクリアと書き込みが行われます。
 
 ### 📂 ディレクトリ構造
 ```
