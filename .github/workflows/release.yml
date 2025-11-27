@@ -1,0 +1,68 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*' # v0.1, v1.0.0 などのタグがプッシュされたら発動
+
+jobs:
+  build:
+    name: Build Executables
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11' 
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build Executables with PyInstaller
+        run: |
+          # srcフォルダに移動してビルド
+          cd src
+          
+          # 1. ランチャー (GUIなし=コンソールなし)
+          pyinstaller --onefile --noconsole --distpath ../dist launcher.py
+          
+          # 2. GUIアプリ (GUIなし)
+          pyinstaller --onefile --noconsole --distpath ../dist/bin gui_main.py
+          pyinstaller --onefile --noconsole --distpath ../dist/bin gui_signal.py
+          
+          # 3. CUIツール (コンソールあり)
+          # ログを見たいのでコンソールありにする
+          pyinstaller --onefile --distpath ../dist/bin remote_entry.py
+          pyinstaller --onefile --distpath ../dist/bin drive_uploader.py
+          
+          # 4. Writer (ルートに配置、コンソールあり)
+          pyinstaller --onefile --distpath ../dist writer.py
+
+      - name: Organize Assets
+        run: |
+          # 音声ファイルをbinにコピー
+          # (PowerShellコマンド)
+          Copy-Item "assets\*.wav" -Destination "dist\bin"
+          
+          # READMEをルートにコピー
+          Copy-Item "README.md" -Destination "dist"
+
+      - name: Create ZIP Archive
+        run: |
+          # distフォルダの中身をzipにする
+          Compress-Archive -Path dist\* -DestinationPath GymkhanaSystem_${{ github.ref_name }}.zip
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: GymkhanaSystem_${{ github.ref_name }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

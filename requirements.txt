@@ -1,0 +1,6 @@
+tk
+nfcpy
+pyserial
+google-api-python-client
+google-auth-oauthlib
+pygame
