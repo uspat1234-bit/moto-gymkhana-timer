@@ -76,7 +76,7 @@ pip install tk nfcpy pyserial google-api-python-client google-auth-oauthlib pyga
 ```
 Bash
 
-python clean_writer.py
+python writer.py
 ```
 
 1. ライダー名、ID、車両名を入力します。
