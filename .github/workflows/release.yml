@@ -110,6 +110,23 @@ jobs:
             Write-Host "Copied README.md"
           }
 
+          # 3. ★ config.ini の作成
+          # (ファイルがなければ、雛形を生成して同梱します)
+          $configContent = @"
+          [GoogleDrive]
+          # ここにアップロード先のフォルダIDを書いてください
+          # (URLの folders/ の後ろの文字列)
+          FolderID = 
+          
+          [System]
+          # 監視するフォルダ名 (通常は変更不要)
+          DataDir = gymkhana_data
+          "@
+          
+          $configPath = Join-Path $distBase "config.ini"
+          Set-Content -Path $configPath -Value $configContent -Encoding UTF8
+          Write-Host "Created config.ini template"
+
       - name: Create ZIP Archive
         run: |
           if (Test-Path "dist") {
