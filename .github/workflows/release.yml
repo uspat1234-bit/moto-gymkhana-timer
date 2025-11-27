@@ -5,10 +5,8 @@ on:
     tags:
       - 'v*' # v0.1, v1.0.0 などのタグがプッシュされたら発動
 
-# ★★★ ここに追加 ★★★
 permissions:
   contents: write
-# ★★★★★★★★★★★★★
 
 jobs:
   build:
@@ -27,40 +25,99 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          # requirements.txt があればインストール、なければ個別に
+          if (Test-Path "requirements.txt") {
+            pip install -r requirements.txt
+          } else {
+            pip install tk nfcpy pyserial google-api-python-client google-auth-oauthlib pygame
+          }
           pip install pyinstaller
 
       - name: Build Executables with PyInstaller
         run: |
-          # srcフォルダに移動してビルド (※フォルダ構成に合わせて調整してください)
-          # 今回はルートにある想定なら移動不要ですが、前回の構成案に従うなら移動
+          # 1. ソースコードの場所を探す (launcher.py を基準にする)
+          $launcher = Get-ChildItem -Path . -Filter "launcher.py" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           
-          # 1. ランチャー
-          pyinstaller --onefile --noconsole --distpath dist launcher.py
+          if ($null -eq $launcher) {
+            Write-Error "エラー: launcher.py が見つかりません。ファイルをコミットしているか確認してください。"
+            exit 1
+          }
           
-          # 2. GUIアプリ
-          pyinstaller --onefile --noconsole --distpath dist/bin gui_main.py
-          pyinstaller --onefile --noconsole --distpath dist/bin gui_signal.py
+          $srcDir = $launcher.DirectoryName
+          Write-Host "ソースディレクトリを特定しました: $srcDir"
           
-          # 3. CUIツール
-          pyinstaller --onefile --distpath dist/bin remote_entry.py
-          pyinstaller --onefile --distpath dist/bin drive_uploader.py
+          # 2. ビルド実行場所へ移動
+          Set-Location $srcDir
           
-          # 4. Writer
-          pyinstaller --onefile --distpath dist writer.py
+          # 3. 出力先の設定 (srcフォルダ内にいる場合とルートの場合で調整)
+          if ($srcDir.EndsWith("src")) {
+            $distRoot = "../dist"
+            $distBin = "../dist/bin"
+          } else {
+            $distRoot = "dist"
+            $distBin = "dist/bin"
+          }
+          
+          # --- ビルド関数 ---
+          function Build-Exe ($scriptName, $outDir, $noconsole) {
+            if (Test-Path $scriptName) {
+              Write-Host "Building $scriptName ..."
+              $args = @("--onefile", "--distpath", $outDir, $scriptName)
+              if ($noconsole) { $args += "--noconsole" }
+              pyinstaller $args
+            } else {
+              Write-Warning "スキップ: $scriptName が見つかりません"
+            }
+          }
+
+          # 4. 各スクリプトのビルド実行
+          Build-Exe "launcher.py" $distRoot $true
+          
+          Build-Exe "gui_main.py" $distBin $true
+          Build-Exe "gui_signal.py" $distBin $true
+          
+          Build-Exe "remote_entry.py" $distBin $false
+          Build-Exe "drive_uploader.py" $distBin $false
+          
+          Build-Exe "writer.py" $distRoot $false
 
       - name: Organize Assets
         run: |
-          # 音声ファイルをbinにコピー (PowerShell)
-          # ※ファイルがある場所を指定してください
-          if (Test-Path "signal_beap.wav") { Copy-Item "*.wav" -Destination "dist\bin" }
+          # 再度ソースの場所を確認
+          $launcher = Get-ChildItem -Path . -Filter "launcher.py" -Recurse | Select-Object -First 1
+          $srcDir = $launcher.DirectoryName
           
-          # READMEをルートにコピー
-          if (Test-Path "README.md") { Copy-Item "README.md" -Destination "dist" }
+          # distフォルダの場所を特定
+          if ($srcDir.EndsWith("src")) { $distBase = "dist" } else { $distBase = "dist" }
+          
+          # binフォルダ確保
+          if (-not (Test-Path "$distBase/bin")) { New-Item -ItemType Directory -Force -Path "$distBase/bin" }
+
+          # 1. 音声ファイルの検索とコピー (.wav)
+          $wavFiles = Get-ChildItem -Path . -Filter "*.wav" -Recurse
+          foreach ($file in $wavFiles) {
+            # distフォルダ内にあるものは除外（無限ループ防止）
+            if ($file.FullName -notlike "*\dist\*") {
+              Copy-Item $file.FullName -Destination "$distBase/bin" -Force
+              Write-Host "Copied asset: $($file.Name)"
+            }
+          }
+          
+          # 2. READMEのコピー
+          $readme = Get-ChildItem -Path . -Filter "README.md" -Recurse | Select-Object -First 1
+          if ($readme) {
+            Copy-Item $readme.FullName -Destination $distBase -Force
+            Write-Host "Copied README.md"
+          }
 
       - name: Create ZIP Archive
         run: |
-          Compress-Archive -Path dist\* -DestinationPath GymkhanaSystem_${{ github.ref_name }}.zip
+          if (Test-Path "dist") {
+            Compress-Archive -Path dist\* -DestinationPath GymkhanaSystem_${{ github.ref_name }}.zip
+          } else {
+            Write-Error "distフォルダが作成されていません。ビルドに失敗した可能性があります。"
+            exit 1
+          }
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
@@ -69,4 +126,3 @@ jobs:
           files: GymkhanaSystem_${{ github.ref_name }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
