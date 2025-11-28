@@ -29,8 +29,10 @@ jobs:
           if (Test-Path "requirements.txt") {
             pip install -r requirements.txt
           } else {
-            pip install tk nfcpy pyserial google-api-python-client google-auth-oauthlib pygame pyinstaller
+            pip install tk nfcpy pyserial google-api-python-client google-auth-oauthlib pygame
           }
+          # pyinstallerは必ずインストール
+          pip install pyinstaller
 
       - name: Build Executables with PyInstaller
         run: |
@@ -38,7 +40,7 @@ jobs:
           $launcher = Get-ChildItem -Path . -Filter "launcher.py" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           
           if ($null -eq $launcher) {
-            Write-Error "エラー: launcher.py が見つかりません。"
+            Write-Error "エラー: launcher.py が見つかりません。ファイルをコミットしているか確認してください。"
             exit 1
           }
           
@@ -80,7 +82,8 @@ jobs:
               if ($noconsole) { $args += "--noconsole" }
               if ($extraArgs) { $args += $extraArgs }
               
-              pyinstaller $args
+              # ★修正: python -m 経由で呼び出すことでPATH問題を回避
+              python -m PyInstaller $args
             } else {
               Write-Error "エラー: $scriptName が見つかりません！"
               exit 1
