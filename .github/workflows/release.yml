@@ -29,27 +29,26 @@ jobs:
           if (Test-Path "requirements.txt") {
             pip install -r requirements.txt
           } else {
-            pip install tk nfcpy pyserial google-api-python-client google-auth-oauthlib pygame
+            pip install tk nfcpy pyserial google-api-python-client google-auth-oauthlib pygame pyinstaller
           }
-          pip install pyinstaller
 
       - name: Build Executables with PyInstaller
         run: |
-          # 1. ソースコードの場所を探す (launcher.py を基準にする)
+          # 1. ソースコードのルート場所を探す (launcher.py を基準にする)
           $launcher = Get-ChildItem -Path . -Filter "launcher.py" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           
           if ($null -eq $launcher) {
-            Write-Error "エラー: launcher.py が見つかりません。ファイルをコミットしているか確認してください。"
+            Write-Error "エラー: launcher.py が見つかりません。"
             exit 1
           }
           
           $srcDir = $launcher.DirectoryName
-          Write-Host "ソースディレクトリを特定しました: $srcDir"
+          Write-Host "ソースディレクトリ: $srcDir"
           
           # 2. ビルド実行場所へ移動
           Set-Location $srcDir
           
-          # 3. 出力先の設定 (srcフォルダ内にいる場合とルートの場合で調整)
+          # 3. 出力先の設定
           if ($srcDir.EndsWith("src")) {
             $distRoot = "../dist"
             $distBin = "../dist/bin"
@@ -58,48 +57,70 @@ jobs:
             $distBin = "dist/bin"
           }
           
-          # --- ビルド関数 ---
-          function Build-Exe ($scriptName, $outDir, $noconsole) {
+          # --- ビルド関数 (引数でオプション追加可能) ---
+          function Build-Exe ($scriptName, $outDir, $noconsole, $extraArgs) {
+            # ファイル探索
             if (Test-Path $scriptName) {
-              Write-Host "Building $scriptName ..."
-              $args = @("--onefile", "--distpath", $outDir, $scriptName)
+              $targetPath = $scriptName
+            } else {
+              $found = Get-ChildItem -Path . -Filter $scriptName -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($found) {
+                $targetPath = $found.FullName
+              } else {
+                $targetPath = $null
+              }
+            }
+
+            if ($targetPath) {
+              Write-Host "Building $targetPath ..."
+              # 基本引数
+              $args = @("--onefile", "--distpath", $outDir, $targetPath)
+              
+              # オプション追加
               if ($noconsole) { $args += "--noconsole" }
+              if ($extraArgs) { $args += $extraArgs }
+              
               pyinstaller $args
             } else {
-              Write-Warning "スキップ: $scriptName が見つかりません"
+              Write-Error "エラー: $scriptName が見つかりません！"
+              exit 1
             }
           }
+          
+          # --- nfcpy用の隠れインポートオプション ---
+          $nfcOpts = @("--hidden-import=nfc.clf.rcs380", "--hidden-import=nfc.clf.transport")
 
           # 4. 各スクリプトのビルド実行
-          Build-Exe "launcher.py" $distRoot $true
           
-          Build-Exe "gui_main.py" $distBin $true
-          Build-Exe "gui_signal.py" $distBin $true
+          # ランチャー
+          Build-Exe "launcher.py" $distRoot $true $null
           
-          Build-Exe "remote_entry.py" $distBin $false
-          Build-Exe "drive_uploader.py" $distBin $false
+          # GUIアプリ
+          Build-Exe "gui_main.py" $distBin $true $null
+          Build-Exe "gui_signal.py" $distBin $true $null
           
-          Build-Exe "writer.py" $distRoot $false
+          # CUIツール (nfcpyを使うものはオプション追加)
+          Build-Exe "remote_entry.py" $distBin $false $nfcOpts
+          Build-Exe "drive_uploader.py" $distBin $false $null
+          
+          # Writer (ルート配置、nfcpy使用)
+          Build-Exe "writer.py" $distRoot $false $nfcOpts
 
       - name: Organize Assets
         run: |
-          # 再度ソースの場所を確認
+          # 再度ソース場所取得
           $launcher = Get-ChildItem -Path . -Filter "launcher.py" -Recurse | Select-Object -First 1
           $srcDir = $launcher.DirectoryName
-          
-          # distフォルダの場所を特定
           if ($srcDir.EndsWith("src")) { $distBase = "dist" } else { $distBase = "dist" }
           
           # binフォルダ確保
           if (-not (Test-Path "$distBase/bin")) { New-Item -ItemType Directory -Force -Path "$distBase/bin" }
 
-          # 1. 音声ファイルの検索とコピー (.wav)
+          # 1. 音声ファイルのコピー
           $wavFiles = Get-ChildItem -Path . -Filter "*.wav" -Recurse
           foreach ($file in $wavFiles) {
-            # distフォルダ内にあるものは除外（無限ループ防止）
             if ($file.FullName -notlike "*\dist\*") {
               Copy-Item $file.FullName -Destination "$distBase/bin" -Force
-              Write-Host "Copied asset: $($file.Name)"
             }
           }
           
@@ -107,32 +128,26 @@ jobs:
           $readme = Get-ChildItem -Path . -Filter "README.md" -Recurse | Select-Object -First 1
           if ($readme) {
             Copy-Item $readme.FullName -Destination $distBase -Force
-            Write-Host "Copied README.md"
           }
 
-          # 3. ★ config.ini の作成
-          # (ファイルがなければ、雛形を生成して同梱します)
+          # 3. config.ini テンプレート作成
           $configContent = @"
           [GoogleDrive]
           # ここにアップロード先のフォルダIDを書いてください
-          # (URLの folders/ の後ろの文字列)
           FolderID = 
           
           [System]
-          # 監視するフォルダ名 (通常は変更不要)
           DataDir = gymkhana_data
           "@
-          
           $configPath = Join-Path $distBase "config.ini"
           Set-Content -Path $configPath -Value $configContent -Encoding UTF8
-          Write-Host "Created config.ini template"
 
       - name: Create ZIP Archive
         run: |
           if (Test-Path "dist") {
             Compress-Archive -Path dist\* -DestinationPath GymkhanaSystem_${{ github.ref_name }}.zip
           } else {
-            Write-Error "distフォルダが作成されていません。ビルドに失敗した可能性があります。"
+            Write-Error "distフォルダがありません。"
             exit 1
           }
 
