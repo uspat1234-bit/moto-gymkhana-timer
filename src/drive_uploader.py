@@ -3,7 +3,9 @@ import time
 import sys
 import json
 import webbrowser
-import configparser  # ★追加: iniファイル読み込み用
+import configparser
+import tkinter as tk
+from tkinter import simpledialog, messagebox
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -17,73 +19,107 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-CONFIG_FILE = os.path.join(BASE_DIR, "config.ini")
+# config.ini のパス探索 (ルート優先)
+CONFIG_FILE_BIN = os.path.join(BASE_DIR, "config.ini")
+CONFIG_FILE_ROOT = os.path.join(os.path.dirname(BASE_DIR), "config.ini")
+
+if os.path.exists(CONFIG_FILE_ROOT):
+    CONFIG_FILE = CONFIG_FILE_ROOT
+else:
+    CONFIG_FILE = CONFIG_FILE_BIN 
+
 TOKEN_FILE = os.path.join(BASE_DIR, "token.json")
 HISTORY_FILE = os.path.join(BASE_DIR, "uploaded_history.txt")
 
-# 認証スコープ
+# ★変更: client_secret.json を外部ファイルとして探す
+# binフォルダ内、またはルートフォルダ内を探す
+CLIENT_SECRET_BIN = os.path.join(BASE_DIR, "client_secret.json")
+CLIENT_SECRET_ROOT = os.path.join(os.path.dirname(BASE_DIR), "client_secret.json")
+
+if os.path.exists(CLIENT_SECRET_ROOT):
+    CLIENT_SECRET_FILE = CLIENT_SECRET_ROOT
+else:
+    CLIENT_SECRET_FILE = CLIENT_SECRET_BIN
+
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
-# ★重要: CLIENT_CONFIG (ここにあなたのclient_secret.jsonの中身を貼る)
-CLIENT_CONFIG = {
-    "installed": {
-        "client_id": "YOUR_CLIENT_ID...",
-        "project_id": "your-project-id...",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_secret": "YOUR_CLIENT_SECRET...",
-        "redirect_uris": ["http://localhost"]
-    }
-}
-
 def load_settings():
-    """config.ini から設定を読み込む"""
     config = configparser.ConfigParser()
     
     # デフォルト設定
+    default_watch_dir = os.path.join(os.path.dirname(CONFIG_FILE), "gymkhana_data")
+    
     settings = {
         "folder_id": "",
-        "watch_dir": os.path.join(BASE_DIR, "gymkhana_data")
+        "watch_dir": default_watch_dir
     }
 
     if os.path.exists(CONFIG_FILE):
         try:
-            # utf-8で読み込む (日本語コメント対応)
             config.read(CONFIG_FILE, encoding='utf-8')
-            
             if "GoogleDrive" in config and "FolderID" in config["GoogleDrive"]:
                 settings["folder_id"] = config["GoogleDrive"]["FolderID"].strip()
-            
             if "System" in config and "DataDir" in config["System"]:
                 dir_name = config["System"]["DataDir"].strip()
-                settings["watch_dir"] = os.path.join(BASE_DIR, dir_name)
-                
-            print("✅ 設定ファイルを読み込みました")
-        except Exception as e:
-            print(f"⚠️ 設定ファイルの読み込みに失敗: {e}")
-    else:
-        print("⚠️ config.ini が見つかりません。デフォルト設定を使用します。")
-        # ファイルがない場合は自動生成するのも親切
-        create_default_config()
+                settings["watch_dir"] = os.path.join(os.path.dirname(CONFIG_FILE), dir_name)
+        except:
+            pass
+    
+    return settings, config
 
-    return settings
+def save_settings(config, folder_id):
+    if not config.has_section("GoogleDrive"):
+        config.add_section("GoogleDrive")
+    config["GoogleDrive"]["FolderID"] = folder_id
+    
+    if not config.has_section("System"):
+        config.add_section("System")
+        config["System"]["DataDir"] = "gymkhana_data"
 
-def create_default_config():
-    """config.ini の雛形を作成"""
-    config = configparser.ConfigParser()
-    config["GoogleDrive"] = {"FolderID": ""}
-    config["System"] = {"DataDir": "gymkhana_data"}
     try:
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             config.write(f)
-        print("ℹ️ config.ini を作成しました。設定してください。")
-    except:
-        pass
+        return True
+    except Exception as e:
+        print(f"設定保存エラー: {e}")
+        return False
 
-# ... (get_drive_service, load_history, save_history, upload_file は変更なし) ...
+def get_folder_id_gui():
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
+
+    while True:
+        folder_id = simpledialog.askstring(
+            "初期設定 (Google Drive)", 
+            "アップロード先のGoogle DriveフォルダIDを入力してください。\n\n"
+            "※ブラウザのURL末尾 folders/ の後ろの文字列です。",
+            parent=root
+        )
+        
+        if folder_id and folder_id.strip():
+            root.destroy()
+            return folder_id.strip()
+        
+        if messagebox.askyesno("終了確認", "IDが入力されていません。\nシステムを終了しますか？", parent=root):
+            root.destroy()
+            sys.exit(0)
+
 def get_drive_service():
-    """Google Drive API認証 (対話型)"""
+    """Google Drive API認証"""
+    
+    # ★追加: client_secret.json の存在チェック
+    if not os.path.exists(CLIENT_SECRET_FILE):
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "設定エラー",
+            "認証ファイル (client_secret.json) が見つかりません。\n\n"
+            "Google Cloud Consoleからダウンロードしたjsonファイルを\n"
+            "このアプリと同じフォルダ(またはbinフォルダ)に配置してください。"
+        )
+        sys.exit(1)
+
     creds = None
     if os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
@@ -93,7 +129,8 @@ def get_drive_service():
             creds.refresh(Request())
         else:
             print("初回認証を行います。ブラウザでログインしてください...")
-            flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, SCOPES)
+            # ファイルからFlowを作成
+            flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_FILE, SCOPES)
             creds = flow.run_local_server(port=0)
         
         with open(TOKEN_FILE, 'w') as token:
@@ -113,10 +150,7 @@ def save_history(filename):
 
 def upload_file(service, filepath, filename, folder_id):
     print(f"アップロード開始: {filename} ...")
-    file_metadata = {
-        'name': filename,
-        'parents': [folder_id]
-    }
+    file_metadata = {'name': filename, 'parents': [folder_id]}
     media = MediaFileUpload(filepath, mimetype='text/csv', resumable=True)
     try:
         file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
@@ -127,31 +161,25 @@ def upload_file(service, filepath, filename, folder_id):
         return False
 
 def main():
-    print(f"--- Drive Uploader (ini Config Ver) ---")
+    print(f"--- Drive Uploader (External JSON) ---")
     
-    # 1. 設定読み込み
-    settings = load_settings()
+    settings, config_obj = load_settings()
     folder_id = settings["folder_id"]
     watch_dir = settings["watch_dir"]
 
-    # 2. フォルダIDチェック
     if not folder_id:
-        print("\n❌ エラー: アップロード先のフォルダIDが設定されていません。")
-        print(f"1. {CONFIG_FILE} をメモ帳で開いてください。")
-        print("2. [GoogleDrive] の FolderID にIDを入力して保存してください。")
-        input("Enterキーを押して終了...")
-        return
+        print("初期設定が必要です...")
+        folder_id = get_folder_id_gui()
+        save_settings(config_obj, folder_id)
 
     print(f"ターゲットID: {folder_id}")
     print(f"監視フォルダ: {watch_dir}")
     
-    # フォルダ待機
     if not os.path.exists(watch_dir):
         print(f"待機中: データフォルダを作成待ち...")
         while not os.path.exists(watch_dir):
             time.sleep(2)
             
-    # 3. 認証
     try:
         service = get_drive_service()
     except Exception as e:
@@ -164,19 +192,20 @@ def main():
 
     while True:
         try:
-            files = os.listdir(watch_dir)
-            for file in files:
-                if file.endswith(".csv") and file not in uploaded_files:
-                    filepath = os.path.join(watch_dir, file)
-                    
-                    initial_size = os.path.getsize(filepath)
-                    time.sleep(1.0)
-                    if os.path.getsize(filepath) != initial_size:
-                        continue 
-                    
-                    if upload_file(service, filepath, file, folder_id):
-                        uploaded_files.add(file)
-                        save_history(file)
+            if os.path.exists(watch_dir):
+                files = os.listdir(watch_dir)
+                for file in files:
+                    if file.endswith(".csv") and file not in uploaded_files:
+                        filepath = os.path.join(watch_dir, file)
+                        
+                        initial_size = os.path.getsize(filepath)
+                        time.sleep(1.0)
+                        if os.path.getsize(filepath) != initial_size:
+                            continue 
+                        
+                        if upload_file(service, filepath, file, folder_id):
+                            uploaded_files.add(file)
+                            save_history(file)
             time.sleep(10.0)
 
         except KeyboardInterrupt:
