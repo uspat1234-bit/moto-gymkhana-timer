@@ -41,7 +41,7 @@ Pythonのインストールや難しい設定は不要です。
 
 1. ダウンロード
 
-GitHubの Releases ページから、最新の GymkhanaSystem_vX.X.zip をダウンロードしてください。
+GitHubの Releases[https://github.com/uspat1234-bit/moto-gymkhana-timer/releases] ページから、最新の GymkhanaSystem_vX.X.zip をダウンロードしてください。
 ZIPファイルを解凍し、好きな場所（デスクトップなど）にフォルダを置きます。
 
 2. Google Driveの設定 (初回のみ)
