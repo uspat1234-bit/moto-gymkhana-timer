@@ -3,7 +3,7 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'v*' # v0.1, v1.0.0 などのタグがプッシュされたら発動
+      - 'v*'
 
 permissions:
   contents: write
@@ -25,32 +25,31 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # requirements.txt があればインストール、なければ個別に
           if (Test-Path "requirements.txt") {
             pip install -r requirements.txt
           } else {
             pip install tk nfcpy pyserial google-api-python-client google-auth-oauthlib pygame
           }
-          # pyinstallerは必ずインストール
           pip install pyinstaller
 
       - name: Build Executables with PyInstaller
         run: |
-          # 1. ソースコードのルート場所を探す (launcher.py を基準にする)
+          # 1. ソースコードの場所を探す
           $launcher = Get-ChildItem -Path . -Filter "launcher.py" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           
           if ($null -eq $launcher) {
-            Write-Error "エラー: launcher.py が見つかりません。ファイルをコミットしているか確認してください。"
+            Write-Error "Error: launcher.py not found."
             exit 1
           }
           
           $srcDir = $launcher.DirectoryName
-          Write-Host "ソースディレクトリ: $srcDir"
+          Write-Host "Source Directory: $srcDir"
           
           # 2. ビルド実行場所へ移動
           Set-Location $srcDir
           
-          # 3. 出力先の設定
+          # 3. 出力先の設定 (すべて bin フォルダに入れる)
+          # srcフォルダ内にいる場合とルートの場合で調整
           if ($srcDir.EndsWith("src")) {
             $distRoot = "../dist"
             $distBin = "../dist/bin"
@@ -59,98 +58,105 @@ jobs:
             $distBin = "dist/bin"
           }
           
-          # --- ビルド関数 (引数でオプション追加可能) ---
+          # --- ビルド関数 ---
           function Build-Exe ($scriptName, $outDir, $noconsole, $extraArgs) {
-            # ファイル探索
             if (Test-Path $scriptName) {
               $targetPath = $scriptName
             } else {
               $found = Get-ChildItem -Path . -Filter $scriptName -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($found) {
-                $targetPath = $found.FullName
-              } else {
-                $targetPath = $null
-              }
+              if ($found) { $targetPath = $found.FullName } else { $targetPath = $null }
             }
 
             if ($targetPath) {
               Write-Host "Building $targetPath ..."
-              # 基本引数
               $args = @("--onefile", "--distpath", $outDir, $targetPath)
-              
-              # オプション追加
               if ($noconsole) { $args += "--noconsole" }
               if ($extraArgs) { $args += $extraArgs }
-              
-              # ★修正: python -m 経由で呼び出すことでPATH問題を回避
               python -m PyInstaller $args
             } else {
-              Write-Error "エラー: $scriptName が見つかりません！"
+              Write-Error "Error: $scriptName not found!"
               exit 1
             }
           }
           
-          # --- nfcpy用の隠れインポートオプション ---
+          # nfcpy用オプション
           $nfcOpts = @("--hidden-import=nfc.clf.rcs380", "--hidden-import=nfc.clf.transport")
 
-          # 4. 各スクリプトのビルド実行
+          # 4. ビルド実行 (すべて $distBin に入れる！)
+          # ★変更: launcher も bin に入れる
+          Build-Exe "launcher.py" $distBin $true $null
           
-          # ランチャー
-          Build-Exe "launcher.py" $distRoot $true $null
-          
-          # GUIアプリ
           Build-Exe "gui_main.py" $distBin $true $null
           Build-Exe "gui_signal.py" $distBin $true $null
           
-          # CUIツール (nfcpyを使うものはオプション追加)
           Build-Exe "remote_entry.py" $distBin $false $nfcOpts
           Build-Exe "drive_uploader.py" $distBin $false $null
           
-          # Writer (ルート配置、nfcpy使用)
-          Build-Exe "writer.py" $distRoot $false $nfcOpts
+          # ★変更: writer も bin に入れる
+          Build-Exe "writer.py" $distBin $false $nfcOpts
 
-      - name: Organize Assets
+      - name: Organize Assets & Create Shortcuts
         run: |
-          # 再度ソース場所取得
+          # パス再設定
           $launcher = Get-ChildItem -Path . -Filter "launcher.py" -Recurse | Select-Object -First 1
           $srcDir = $launcher.DirectoryName
           if ($srcDir.EndsWith("src")) { $distBase = "dist" } else { $distBase = "dist" }
+          $distBin = "$distBase\bin"
           
           # binフォルダ確保
-          if (-not (Test-Path "$distBase/bin")) { New-Item -ItemType Directory -Force -Path "$distBase/bin" }
+          if (-not (Test-Path $distBin)) { New-Item -ItemType Directory -Force -Path $distBin }
 
-          # 1. 音声ファイルのコピー
+          # 1. 音声ファイルのコピー -> binへ
           $wavFiles = Get-ChildItem -Path . -Filter "*.wav" -Recurse
           foreach ($file in $wavFiles) {
             if ($file.FullName -notlike "*\dist\*") {
-              Copy-Item $file.FullName -Destination "$distBase/bin" -Force
+              Copy-Item $file.FullName -Destination $distBin -Force
             }
           }
           
-          # 2. READMEのコピー
+          # 2. READMEのコピー -> ルートへ
           $readme = Get-ChildItem -Path . -Filter "README.md" -Recurse | Select-Object -First 1
-          if ($readme) {
-            Copy-Item $readme.FullName -Destination $distBase -Force
-          }
+          if ($readme) { Copy-Item $readme.FullName -Destination $distBase -Force }
 
-          # 3. config.ini テンプレート作成
+          # 3. config.ini テンプレート作成 -> binへ (実体はbinに置く)
           $configContent = @"
           [GoogleDrive]
-          # ここにアップロード先のフォルダIDを書いてください
           FolderID = 
-          
           [System]
           DataDir = gymkhana_data
           "@
-          $configPath = Join-Path $distBase "config.ini"
+          $configPath = Join-Path $distBin "config.ini"
           Set-Content -Path $configPath -Value $configContent -Encoding UTF8
+
+          # 4. ★ショートカットの作成 (ルートに配置)
+          $WshShell = New-Object -comObject WScript.Shell
+          
+          # ランチャーのショートカット
+          $lnkLauncher = $WshShell.CreateShortcut("$distBase\Launcher.lnk")
+          $lnkLauncher.TargetPath = "$distBin\launcher.exe"
+          $lnkLauncher.WorkingDirectory = "$distBin"
+          $lnkLauncher.Save()
+          
+          # Writerのショートカット
+          $lnkWriter = $WshShell.CreateShortcut("$distBase\Writer.lnk")
+          $lnkWriter.TargetPath = "$distBin\writer.exe"
+          $lnkWriter.WorkingDirectory = "$distBin"
+          $lnkWriter.Save()
+          
+          # Configのショートカット
+          $lnkConfig = $WshShell.CreateShortcut("$distBase\Config.lnk")
+          $lnkConfig.TargetPath = "$distBin\config.ini"
+          $lnkConfig.WorkingDirectory = "$distBin"
+          $lnkConfig.Save()
+          
+          Write-Host "Created Shortcuts in root directory."
 
       - name: Create ZIP Archive
         run: |
           if (Test-Path "dist") {
             Compress-Archive -Path dist\* -DestinationPath GymkhanaSystem_${{ github.ref_name }}.zip
           } else {
-            Write-Error "distフォルダがありません。"
+            Write-Error "dist folder missing."
             exit 1
           }
 
