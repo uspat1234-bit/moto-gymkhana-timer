@@ -35,6 +35,43 @@ graph LR
     Uploader -->|API| Cloud[Google Drive]
 ```
 
+## 📦 ダウンロードと使い方 (Windows用)
+
+Pythonのインストールや難しい設定は不要です。
+
+1. ダウンロード
+
+GitHubの Releases ページから、最新の GymkhanaSystem_vX.X.zip をダウンロードしてください。
+ZIPファイルを解凍し、好きな場所（デスクトップなど）にフォルダを置きます。
+
+2. Google Driveの設定 (初回のみ)
+
+まず、Google Drive連携に必要な準備を行います。同梱の SETUP_GDRIVE.md を参照して、Google Cloudの設定と認証ファイルの配置を行ってください。
+
+その後、フォルダ内の Config.bat をダブルクリックして設定ファイルを開きます。
+アップロード先のGoogle DriveフォルダIDを入力して保存します。
+```
+[GoogleDrive]
+# Google DriveのフォルダURLの末尾にあるIDを記入してください
+# 例: [https://drive.google.com/drive/folders/XXXXXXXXXXXX](https://drive.google.com/drive/folders/XXXXXXXXXXXX)
+FolderID = XXXXXXXXXXXX
+```
+
+※初回起動時にブラウザが開き、Googleアカウントへのログインを求められる場合があります。
+
+3. アプリの起動
+
+フォルダ内の Launcher.bat をダブルクリックします。
+ランチャーが起動し、以下の機能が選べます。
+
+通常モード (Normal Mode): シンプルなタイム計測。
+
+シグナルモード (Signal Mode): 本格的なシグナルスタート計測。
+
+NFCタグ作成 (Writer): 参加者配布用のNFCタグを作成。
+
+
+### 開発者向け
 ### 📦 インストール
 ## 必要要件
 * Python 3.10以上
