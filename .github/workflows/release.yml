@@ -3,7 +3,7 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*' # v0.1, v1.0.0 などのタグがプッシュされたら発動
 
 permissions:
   contents: write
@@ -25,6 +25,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          # requirements.txt があればインストール、なければ個別に
           if (Test-Path "requirements.txt") {
             pip install -r requirements.txt
           } else {
@@ -34,22 +35,21 @@ jobs:
 
       - name: Build Executables with PyInstaller
         run: |
-          # 1. ソースコードの場所を探す
+          # 1. ソースコードのルート場所を探す
           $launcher = Get-ChildItem -Path . -Filter "launcher.py" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           
           if ($null -eq $launcher) {
-            Write-Error "Error: launcher.py not found."
+            Write-Error "エラー: launcher.py が見つかりません。"
             exit 1
           }
           
           $srcDir = $launcher.DirectoryName
-          Write-Host "Source Directory: $srcDir"
+          Write-Host "ソースディレクトリ: $srcDir"
           
           # 2. ビルド実行場所へ移動
           Set-Location $srcDir
           
-          # 3. 出力先の設定 (すべて bin フォルダに入れる)
-          # srcフォルダ内にいる場合とルートの場合で調整
+          # 3. 出力先の設定
           if ($srcDir.EndsWith("src")) {
             $distRoot = "../dist"
             $distBin = "../dist/bin"
@@ -74,7 +74,7 @@ jobs:
               if ($extraArgs) { $args += $extraArgs }
               python -m PyInstaller $args
             } else {
-              Write-Error "Error: $scriptName not found!"
+              Write-Error "エラー: $scriptName が見つかりません！"
               exit 1
             }
           }
@@ -82,20 +82,17 @@ jobs:
           # nfcpy用オプション
           $nfcOpts = @("--hidden-import=nfc.clf.rcs380", "--hidden-import=nfc.clf.transport")
 
-          # 4. ビルド実行 (すべて $distBin に入れる！)
-          # ★変更: launcher も bin に入れる
+          # 4. ビルド実行 (すべて bin に入れる)
           Build-Exe "launcher.py" $distBin $true $null
-          
           Build-Exe "gui_main.py" $distBin $true $null
           Build-Exe "gui_signal.py" $distBin $true $null
           
           Build-Exe "remote_entry.py" $distBin $false $nfcOpts
           Build-Exe "drive_uploader.py" $distBin $false $null
           
-          # ★変更: writer も bin に入れる
           Build-Exe "writer.py" $distBin $false $nfcOpts
 
-      - name: Organize Assets & Create Shortcuts
+      - name: Organize Assets & Create Launchers
         run: |
           # パス再設定
           $launcher = Get-ChildItem -Path . -Filter "launcher.py" -Recurse | Select-Object -First 1
@@ -106,7 +103,7 @@ jobs:
           # binフォルダ確保
           if (-not (Test-Path $distBin)) { New-Item -ItemType Directory -Force -Path $distBin }
 
-          # 1. 音声ファイルのコピー -> binへ
+          # 1. 音声ファイルのコピー
           $wavFiles = Get-ChildItem -Path . -Filter "*.wav" -Recurse
           foreach ($file in $wavFiles) {
             if ($file.FullName -notlike "*\dist\*") {
@@ -114,11 +111,11 @@ jobs:
             }
           }
           
-          # 2. READMEのコピー -> ルートへ
+          # 2. READMEのコピー
           $readme = Get-ChildItem -Path . -Filter "README.md" -Recurse | Select-Object -First 1
           if ($readme) { Copy-Item $readme.FullName -Destination $distBase -Force }
 
-          # 3. config.ini テンプレート作成 -> binへ (実体はbinに置く)
+          # 3. config.ini テンプレート作成 (bin内)
           $configContent = @"
           [GoogleDrive]
           FolderID = 
@@ -128,28 +125,22 @@ jobs:
           $configPath = Join-Path $distBin "config.ini"
           Set-Content -Path $configPath -Value $configContent -Encoding UTF8
 
-          # 4. ★ショートカットの作成 (ルートに配置)
-          $WshShell = New-Object -comObject WScript.Shell
+          # 4. ★変更: 起動用バッチファイルの作成 (ルートに配置)
+          # これなら相対パスで動作するため、配布先でもリンク切れしません。
           
-          # ランチャーのショートカット
-          $lnkLauncher = $WshShell.CreateShortcut("$distBase\Launcher.lnk")
-          $lnkLauncher.TargetPath = "$distBin\launcher.exe"
-          $lnkLauncher.WorkingDirectory = "$distBin"
-          $lnkLauncher.Save()
+          # Launcher.bat
+          $batLauncher = '@echo off' + "`r`n" + 'start "" "bin\launcher.exe"'
+          Set-Content -Path "$distBase\Launcher.bat" -Value $batLauncher -Encoding Default
           
-          # Writerのショートカット
-          $lnkWriter = $WshShell.CreateShortcut("$distBase\Writer.lnk")
-          $lnkWriter.TargetPath = "$distBin\writer.exe"
-          $lnkWriter.WorkingDirectory = "$distBin"
-          $lnkWriter.Save()
+          # Writer.bat
+          $batWriter = '@echo off' + "`r`n" + 'start "" "bin\writer.exe"'
+          Set-Content -Path "$distBase\Writer.bat" -Value $batWriter -Encoding Default
           
-          # Configのショートカット
-          $lnkConfig = $WshShell.CreateShortcut("$distBase\Config.lnk")
-          $lnkConfig.TargetPath = "$distBin\config.ini"
-          $lnkConfig.WorkingDirectory = "$distBin"
-          $lnkConfig.Save()
+          # Config.bat (メモ帳で開く)
+          $batConfig = '@echo off' + "`r`n" + 'notepad "bin\config.ini"'
+          Set-Content -Path "$distBase\Config.bat" -Value $batConfig -Encoding Default
           
-          Write-Host "Created Shortcuts in root directory."
+          Write-Host "Created Batch files in root directory."
 
       - name: Create ZIP Archive
         run: |
