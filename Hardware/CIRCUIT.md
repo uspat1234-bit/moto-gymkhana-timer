@@ -1,33 +1,31 @@
 ### 回路図 (Circuit Diagram)
-12Vの産業用センサー(NPN出力)を、Arduino(5V)で安全に受けるための絶縁回路（フォトカプラ回路）の配線図です。この回路を2セット（スタート用・ゴール用）作成します。
+12Vの産業用センサー(NPN出力)を、ESP32C6(5V)で安全に受けるための絶縁回路（フォトカプラ回路）の配線図です。この回路を2セット（スタート用・ゴール用）作成します。
 ### 簡易配線図 
 ```mermaid
 
 graph TD
-
-    subgraph 12V_Side ["左側: 12V・センサーエリア"]
-        BattPos["12V バッテリー (+)"] -->|赤ライン| R1["抵抗 2.2kΩ"]
-        BattPos --> SensorBrn["センサー 茶色"]
-        
-        R1 --> PC1["PC817 1番ピン (●)"]
-        
-        SensorBlk["センサー 黒色 (信号)"] --> PC2["PC817 2番ピン"]
-        
-        SensorBlu["センサー 青色"] -->|青ライン| BattNeg["12V バッテリー (-)"]
+    subgraph Power [電源供給]
+        Battery[モバイルバッテリー (PD対応)] -->|USB-C 12Vトリガー| DC_Jack[DCジャック (12V)]
     end
 
-    subgraph Isolation ["絶縁 (フォトカプラ)"]
-        PC1 -.->|光| PC4["PC817 4番ピン"]
-        PC2 -.-> PC3["PC817 3番ピン"]
+    subgraph Sensor_Side [12V・センサーエリア]
+        DC_Jack -->|12V (+)| SensorBrn[センサー 茶色]
+        DC_Jack -->|12V (+)| R1[抵抗 2.2kΩ]
+        R1 --> PC1[PC817 Pin1 (●)]
+        
+        SensorBlk[センサー 黒色] --> PC2[PC817 Pin2]
+        SensorBlu[センサー 青色] -->|GND (-)| DC_Jack
     end
 
-    subgraph 5V_Side ["右側: 5V・Arduinoエリア"]
-        Ard5V["Arduino 5V"] -->|赤ライン| R2["抵抗 10kΩ"]
-        R2 --> PC4
+    subgraph MCU_Side [5V/3.3V・ESP32エリア]
+        DC_Jack -->|DC-DC / 5V変換| ESP_5V[XIAO 5Vピン]
+        ESP_GND[XIAO GND] --> DC_Jack
         
-        PC4 -->|"信号 (LOW=検知)"| ArdPin["Arduino D2 / D3"]
+        ESP_3V3[XIAO 3V3] -->|3.3V| R2[抵抗 10kΩ]
+        R2 --> PC4[PC817 Pin4]
         
-        PC3 -->|青ライン| ArdGND["Arduino GND"]
+        PC4 -->|信号 (D0)| ESP_D0[XIAO D0]
+        PC3[PC817 Pin3] --> ESP_GND
     end
 ```
 
