@@ -1,12 +1,12 @@
 # Moto Gymkhana Timing System (MGTS)
 
 
-モトジムカーナ（バイク競技）のための、**NFCエントリー機能付き自動タイム計測システム** です。
-産業用光電センサーによる高精度な計測と、NFCタグによるスムーズなライダー登録を実現します。
+モトジムカーナ（バイク競技）のための、Wi-Fi 6対応 完全ワイヤレス自動タイム計測システム です。
+高圧線下などのノイズ環境でも安定して通信できるESP32-C6を採用し、PCとセンサー間を無線化。配線の煩わしさから解放されます。
 
 ## 🚀 特徴
 
-* **自動計測:** Arduinoと光電センサーによる0.01秒単位の正確な計測。
+* **自動計測:** ESP32-C6と光電センサーによる0.01秒単位の正確な計測。
 * **NFCエントリー:** ICカードをかざすだけでライダー名とIDを登録（順番待ちリストへ追加）。
 * **シグナルスタート:** 赤→黄→緑のシグナル表示、フライング検知、リアクションタイム計測機能。
 * **追走対応:** コース上に複数台が走行していても正しく計測・管理可能。
@@ -17,7 +17,7 @@
 
 ### ハードウェア
 * **PC:** WindowsノートPC (メイン処理、GUI表示)
-* **マイコン:** Arduino Nano R4 Minima (センサー信号処理)
+* **マイコン:** ESP32-C6(センサー信号処理)
 * **センサー:** OMRON E3Z-R66 (回帰反射型光電センサー) × 2 (Start/Stop)
 * **NFCリーダー:** Sony RC-S380 (PaSoRi)
 * **回路:** フォトカプラ (PC817) による12V/5V絶縁回路
@@ -26,13 +26,21 @@
 
 ```mermaid
 graph LR
-    Sensor[光電センサー] -->|Signal| Arduino[Arduino Nano]
-    Arduino -->|"Serial(USB)"| PC_GUI[gui_main.py]
-    NFC[RC-S380] -->|nfcpy| PC_NFC[remote_entry.py]
-    PC_NFC -->|UDP| PC_GUI
-    PC_GUI -->|CSV| Local[Local Storage]
-    Local -->|Watch| Uploader[drive_uploader.py]
-    Uploader -->|API| Cloud[Google Drive]
+    subgraph PC_Area ["計測本部 (Windows PC)"]
+        GUI["計測アプリ (Python)"]
+        NFC["NFCリーダー"] -->|"USB"| GUI
+        GUI -->|"CSV"| GDrive["Google Drive"]
+   end
+```
+```mermaid
+graph LR
+    subgraph Field ["コースエリア"]
+        Sensor1["Startセンサー"] -->|"GPIO"| ESP1["ESP32-C6 (Start)"]
+        Sensor2["Goalセンサー"] -->|"GPIO"| ESP2["ESP32-C6 (Goal)"]
+
+    ESP1 -.->|"Wi-Fi (UDP)"| GUI
+    ESP2 -.->|"Wi-Fi (UDP)"| GUI
+   end
 ```
 
 ## 📦 ダウンロードと使い方 (Windows用)
@@ -57,9 +65,20 @@ ZIPファイルを解凍し、好きな場所（デスクトップなど）に�
 FolderID = XXXXXXXXXXXX
 ```
 
-※初回起動時にブラウザが開き、Googleアカウントへのログインを求められる場合があります。
+※初回起動時にブラウザが開き、Googleアカウントへのログインを求められる場合があります。  
 
-3. アプリの起動
+3. PCのWi-Fi設定
+ノートPCの「モバイルホットスポット」をONにします。
+
+SSID: motogym
+
+PASS: password123
+
+帯域: 2.4GHz
+※ESP32はこのSSIDに自動接続するようにプログラムされています。
+
+
+4. アプリの起動
 
 フォルダ内の Launcher.bat をダブルクリックします。
 ランチャーが起動し、以下の機能が選べます。
@@ -99,10 +118,10 @@ pip install tk nfcpy pyserial google-api-python-client google-auth-oauthlib pyga
 
 * Zadig を使用して、RC-S380のドライバーを WinUSB に変更してください。
 
-4.Arduinoの準備
+4.ESP32-C6への書き込み
 
 
-* Arduino IDEで arduino_sketch/sensor_firmware.ino を開き、Arduino Nano R4に書き込みます。
+* Arduino IDEで arduino_sketch/sensor_wifi_udp_start.ino,sensor_wifi_udp_stop.ino を開き、ECS32-C6に書き込みます。
 
 5.Google Drive設定 (オプション)
 
@@ -157,7 +176,7 @@ python launcher.py
 * remote_entry.py がバックグラウンドで起動します。
 
 
-* NFCタグ（Suica、免許証、専用タグ）をリーダーにかざすと、ライダー名が登録され「待ち行列（Queue）」に追加されます。
+* NFCタグ（専用タグ）をリーダーにかざすと、ライダー名が登録され「待ち行列（Queue）」に追加されます。
 
 ### 📂 ディレクトリ構造
 ```
