@@ -4,28 +4,28 @@
 ```mermaid
 
 graph TD
-    subgraph Power [電源供給]
-        Battery[モバイルバッテリー (PD対応)] -->|USB-C 12Vトリガー| DC_Jack[DCジャック (12V)]
+    subgraph Power ["電源供給"]
+        Battery["モバイルバッテリー (PD対応)"] -->|"USB-C 12Vトリガー"| DC_Jack["DCジャック (12V)"]
     end
 
-    subgraph Sensor_Side [12V・センサーエリア]
-        DC_Jack -->|12V (+)| SensorBrn[センサー 茶色]
-        DC_Jack -->|12V (+)| R1[抵抗 2.2kΩ]
-        R1 --> PC1[PC817 Pin1 (●)]
+    subgraph Sensor_Side ["12V・センサーエリア"]
+        DC_Jack -->|"12V (+)"| SensorBrn["センサー 茶色"]
+        DC_Jack -->|"12V (+)"| R1["抵抗 2.2kΩ"]
+        R1 --> PC1["PC817 1番ピン (●)"]
         
-        SensorBlk[センサー 黒色] --> PC2[PC817 Pin2]
-        SensorBlu[センサー 青色] -->|GND (-)| DC_Jack
+        SensorBlk["センサー 黒色"] --> PC2["PC817 2番ピン"]
+        SensorBlu["センサー 青色"] -->|"GND (-)"| DC_Jack
     end
 
-    subgraph MCU_Side [5V/3.3V・ESP32エリア]
-        DC_Jack -->|DC-DC / 5V変換| ESP_5V[XIAO 5Vピン]
-        ESP_GND[XIAO GND] --> DC_Jack
+    subgraph MCU_Side ["5V/3.3V・ESP32エリア"]
+        DC_Jack -->|"DC-DC / 5V変換"| ESP_5V["XIAO 5Vピン"]
+        ESP_GND["XIAO GND"] --> DC_Jack
         
-        ESP_3V3[XIAO 3V3] -->|3.3V| R2[抵抗 10kΩ]
-        R2 --> PC4[PC817 Pin4]
+        ESP_3V3["XIAO 3V3"] -->|"3.3V"| R2["抵抗 10kΩ"]
+        R2 --> PC4["PC817 4番ピン"]
         
-        PC4 -->|信号 (D0)| ESP_D0[XIAO D0]
-        PC3[PC817 Pin3] --> ESP_GND
+        PC4 -->|"信号 (D0)"| ESP_D0["XIAO D0"]
+        PC3["PC817 3番ピン"] --> ESP_GND
     end
 ```
 
