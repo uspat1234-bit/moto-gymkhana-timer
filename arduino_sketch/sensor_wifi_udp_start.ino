@@ -1,150 +1,177 @@
+/*
+ * ====================================================================
+ * MGTS (Moto Gymkhana Timing System) - Sensor Node Unit
+ * * [概要]
+ * 本プログラムは、モトジムカーナ計測システムにおける「センサー送信部」の
+ * 制御基板（XIAO ESP32-C6）用ファームウェアです。
+ * * [冗長化設計（Active-Active）]
+ * 1. 無線ルート: ESP-NOW プロトコルによるピア・ツー・ピア超低遅延送信
+ * 2. 有線ルート: W5500 チップを介した有線LAN（UDPブロードキャスト）送信
+ * * [環境ノイズ・運用対策]
+ * - ソフトウェア・デバウンス処理（20ms継続判定）による雨滴・落ち葉のサプレッション
+ * - エッジトリガー（ワンショット）制御による、エリア内滞留時の通信ストーム防止
+ * ====================================================================
+ */
+
+#include <SPI.h>
+#include <Ethernet.h>
 #include <WiFi.h>
-#include <WiFiUdp.h>
-#include <esp_wifi.h> // Wi-Fiの詳細情報を取得するために必要
+#include <esp_now.h>
+#include <esp_wifi.h>
 
-// --- ★設定エリア★ ---
+/* ====================================================================
+ * ハードウェア・ピン定義 (Seeed Studio XIAO ESP32-C6)
+ * ==================================================================== */
+// センサー入力ピン (回路図の d3 結線に対応。内部GPIO: 21)
+#define SENSOR_PIN    21  
 
-// 1. Wi-Fi設定 (スマホのテザリング情報)
-const char* SSID     = "motogym";
-const char* PASSWORD = "password123";
+// W5500 有線LANモジュール接続用 (SPIバスおよび制御ピン)
+#define ETH_CS_PIN    1   // チップセレクト (D1 / GPIO 1)
+#define ETH_RST_PIN   2   // ハードウェア・リセット (D2 / GPIO 2)
+#define SPI_SCK       19  // SPI クロック (D8 / GPIO 19)
+#define SPI_MISO      20  // SPI MISO (D9 / GPIO 20)
+#define SPI_MOSI      18  // SPI MOSI (D10 / GPIO 18)
 
-// 2. センサーの役割 ("START" または "STOP")
-const String SENSOR_ROLE = "START"; 
+/* ====================================================================
+ * ネットワーク構成設定
+ * ==================================================================== */
+// 有線LAN (W5500) 静的IPアドレス定義 (.20のメインボードと重複不可)
+byte mac_eth[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xE1 };
+IPAddress ip_eth(192, 168, 1, 21);      
+IPAddress dns(192, 168, 1, 1);
+IPAddress gateway(192, 168, 1, 1);
+IPAddress subnet(255, 255, 255, 0);
 
-// 3. ピン設定 (Seeed Studio XIAO ESP32C6)
-const int PIN_SENSOR = 0;   // D0
-const int PIN_LED    = 15;  // オンボードLED
-
-// 4. 通信設定
+EthernetUDP ethUdp;
 const int UDP_PORT = 5005;
+IPAddress broadcastIp(255, 255, 255, 255); // レイヤ3 ブロードキャスト宛先
 
-// 5. センサー不感時間 (ミリ秒)
-const int SENSOR_COOLDOWN_MS = 2000; 
-// --------------------
+// 無線LAN (ESP-NOW) 受信側（メインLEDボード）の物理アドレス
+uint8_t broadcastAddress[] = {0x58, 0xE6, 0xC5, 0x12, 0x9A, 0x80};
 
-WiFiUDP udp;
-int lastSensorState = HIGH;
-unsigned long lastHeartbeatTime = 0;
-unsigned long lastTriggerTime = 0;
+/* ====================================================================
+ * タイミング制御・フィルター用パラメータ
+ * ==================================================================== */
+const unsigned long DEBOUNCE_MS = 20;     // チャタリング排除用の継続遮断閾値 (ms)
+const unsigned long SEND_GUARD_MS = 3000; // 不正連続トリガー防止用の再送信ガード時間 (ms)
 
-void connectToWiFi();
-void sendUdpPacket(String message);
-void sendHeartbeat();
-void printConnectionDetails();
+unsigned long lastSendTime = 0;           // 最終パケット送信タイムスタンプ
+unsigned long detectionStartTime = 0;      // センサー初期検知タイムスタンプ
+bool isDetecting = false;                 // センサー入力継続フラグ
+bool hasTriggered = false;                // 送信完了ロックフラグ (ワンショット制御用)
 
-// プロトコル名を文字列で返すヘルパー関数
-String getProtocolString() {
-  uint8_t protocol_bitmap;
-  esp_wifi_get_protocol(WIFI_IF_STA, &protocol_bitmap);
-  
-  if (protocol_bitmap & WIFI_PROTOCOL_11AX) return "11ax"; // Wi-Fi 6
-  if (protocol_bitmap & WIFI_PROTOCOL_11N) return "11n";   // Wi-Fi 4
-  if (protocol_bitmap & WIFI_PROTOCOL_11G) return "11g";
-  if (protocol_bitmap & WIFI_PROTOCOL_11B) return "11b";
-  return "unknown";
+/**
+ * ESP-NOW 送信完了コールバック関数
+ * パケット送信成否のハンドシェイク結果をシリアルログに出力
+ */
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  Serial.print("[TX_LOG] ESP-NOW status: ");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "DELIVERED" : "FAILED");
 }
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  pinMode(SENSOR_PIN, INPUT_PULLUP); // センサー信号入力をプルアップで固定
 
-  pinMode(PIN_SENSOR, INPUT_PULLUP); 
-  pinMode(PIN_LED, OUTPUT);
+  Serial.println("\n[INIT] Initialize MGTS Sensor Node...");
 
-  connectToWiFi();
+  // ------------------------------------------------------------------
+  // 1. 有線LANモジュール (W5500) 初期化シーケンス
+  // ------------------------------------------------------------------
+  pinMode(ETH_RST_PIN, OUTPUT);
+  digitalWrite(ETH_RST_PIN, LOW);  delay(100);
+  digitalWrite(ETH_RST_PIN, HIGH); delay(500); // 物理リセット処理
+  
+  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, ETH_CS_PIN);
+  Ethernet.init(ETH_CS_PIN);
+  Ethernet.begin(mac_eth, ip_eth, dns, gateway, subnet);
+  
+  if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+    Serial.println("[ERROR] W5500 hardware not detected. Ethernet disabled.");
+  } else {
+    ethUdp.begin(UDP_PORT);
+    Serial.print("[INFO] W5500 Ethernet initialized. IP: ");
+    Serial.println(Ethernet.localIP());
+  }
+
+  // ------------------------------------------------------------------
+  // 2. 無線LAN (ESP-NOW) 初期化シーケンス
+  // ------------------------------------------------------------------
+  WiFi.mode(WIFI_STA);
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE); // チャンネルを1chに固定（パケットの衝突・不一致対策）
+  WiFi.disconnect();
+
+  if (esp_now_init() == ESP_OK) {
+    // ESP Core v3.x の厳格な型チェックを通過させるためキャスト処理を実行
+    esp_now_register_send_cb((esp_now_send_cb_t)OnDataSent);
+    
+    // 受信側ピア（ホスト）の登録処理
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+    peerInfo.channel = 1;
+    peerInfo.encrypt = false;
+    
+    if (esp_now_add_peer(&peerInfo) == ESP_OK) {
+      Serial.println("[INFO] ESP-NOW Protocol initialized. Peer registered.");
+    } else {
+      Serial.println("[ERROR] Failed to register ESP-NOW peer.");
+    }
+  } else {
+    Serial.println("[ERROR] Failed to initialize ESP-NOW.");
+  }
+
+  Serial.println("[READY] System status: ACTIVE. Monitoring SENSOR_PIN (GPIO21)...");
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    digitalWrite(PIN_LED, LOW);
-    connectToWiFi();
+  // センサー入力状態のサンプリング (LOW: 遮断状態 / HIGH: 通過状態)
+  bool currentSensorState = (digitalRead(SENSOR_PIN) == LOW);
+  unsigned long now = millis();
+
+  if (currentSensorState) {
+    if (!isDetecting) {
+      // センサーの初回遮断エッジを検出
+      detectionStartTime = now;
+      isDetecting = true;
+      hasTriggered = false; // 新規ターゲット侵入のためロックを解除
+    } 
+    else {
+      // チャタリング・ノイズ除去フィルターの判定
+      if (now - detectionStartTime >= DEBOUNCE_MS) {
+        
+        // 未送信かつ送信ガード時間を超過している場合のみパケットを送出 (エッジトリガー制御)
+        if (!hasTriggered && (now - lastSendTime > SEND_GUARD_MS)) {
+          String msg = "START";
+          
+          Serial.println("\n-----------------------------------------");
+          Serial.print("[TRIGGER] Target detected. Duration: ");
+          Serial.print(now - detectionStartTime);
+          Serial.println(" ms");
+
+          // ルート1: 無線パケット送出 (ESP-NOW)
+          esp_now_send(broadcastAddress, (uint8_t *)msg.c_str(), msg.length());
+          
+          // ルート2: 有線パケット送出 (UDP Layer3 Broadcast)
+          if (Ethernet.hardwareStatus() != EthernetNoHardware) {
+            ethUdp.beginPacket(broadcastIp, UDP_PORT);
+            ethUdp.print(msg);
+            ethUdp.endPacket();
+            Serial.println("[TX_UDP] Broadcast packet sent successfully.");
+          }
+
+          Serial.println("-----------------------------------------");
+          
+          lastSendTime = now;
+          hasTriggered = true; // 送信完了ロックを有効化（滞留時の連続誤送信を抑制）
+        }
+      }
+    }
   } else {
-    digitalWrite(PIN_LED, HIGH); 
+    // センサー解放（光線復帰）時にすべてのステートをリセット
+    isDetecting = false;
+    hasTriggered = false; 
   }
 
-  int currentSensorState = digitalRead(PIN_SENSOR);
-  unsigned long currentTime = millis();
-
-  // 反応検知
-  if (lastSensorState == HIGH && currentSensorState == LOW && (currentTime - lastTriggerTime > SENSOR_COOLDOWN_MS)) {
-    Serial.println("Sensor Active!");
-    
-    lastTriggerTime = currentTime;
-    digitalWrite(PIN_LED, LOW);
-    
-    String msg = SENSOR_ROLE;
-    // START版なので特別な変換は不要ですが、一応残しておきます
-    if (msg == "GOAL") msg = "STOP";
-    
-    Serial.print("Sending UDP: ");
-    Serial.println(msg);
-    sendUdpPacket(msg);
-    
-    delay(100); 
-    digitalWrite(PIN_LED, HIGH);
-  }
-
-  lastSensorState = currentSensorState;
-  
-  // 死活監視
-  // 3秒ごとに送信
-  if (millis() - lastHeartbeatTime > 3000) {
-    sendHeartbeat();
-    lastHeartbeatTime = millis();
-  }
-  
-  delay(10);
-}
-
-void connectToWiFi() {
-  Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(SSID);
-
-  WiFi.begin(SSID, PASSWORD);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-    digitalWrite(PIN_LED, !digitalRead(PIN_LED));
-  }
-
-  Serial.println("\nWiFi connected!");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-  
-  printConnectionDetails();
-
-  digitalWrite(PIN_LED, HIGH);
-}
-
-void printConnectionDetails() {
-  Serial.print("Protocol: ");
-  Serial.println(getProtocolString());
-  Serial.print("Signal: ");
-  Serial.print(WiFi.RSSI());
-  Serial.println(" dBm");
-}
-
-void sendUdpPacket(String message) {
-  udp.beginPacket(IPAddress(255, 255, 255, 255), UDP_PORT);
-  udp.print(message);
-  udp.endPacket();
-}
-
-// 詳細情報を含めて送信
-void sendHeartbeat() {
-  String role = SENSOR_ROLE;
-  if (role == "STOP") role = "GOAL";
-  
-  long rssi = WiFi.RSSI();           // 電波強度
-  String proto = getProtocolString(); // プロトコル(11ax等)
-  
-  String json = "{\"status\":\"alive\",\"sensor\":\"" + role + 
-                "\",\"rssi\":" + String(rssi) + 
-                ",\"proto\":\"" + proto + "\"}";
-  
-  udp.beginPacket(IPAddress(255, 255, 255, 255), UDP_PORT);
-  udp.print(json);
-  udp.endPacket();
+  // 高速サンプリング周期の維持（1kHz）
+  delay(1);
 }
