@@ -60,7 +60,7 @@ const int UDP_PORT = 5005;
  * 通信および制御用・内部グローバル変数
  * ==================================================================== */
 EthernetUDP ethUdp;
-uint8_t target_mac_main[] = { 0x58, 0xE6, 0xC5, 0x12, 0x9A, 0x8F }; // メインLED基板のWiFi物理MAC
+uint8_t target_mac_main[] = { XXXXXXXXXXXXXXXXXXXXXXXXXXX }; // メインLED基板のWiFi物理MAC
 
 // チャタリングガード時間 (ms)
 const unsigned long SENSOR_DEBOUNCE_MS = 20;
