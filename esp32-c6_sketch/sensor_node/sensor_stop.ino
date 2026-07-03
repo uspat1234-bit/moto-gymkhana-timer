@@ -47,7 +47,7 @@ const int UDP_PORT = 5005;
 IPAddress broadcastIp(255, 255, 255, 255); // レイヤ3 ブロードキャスト宛先
 
 // 無線LAN (ESP-NOW) 受信側（メインLEDボード）の物理アドレス
-uint8_t broadcastAddress[] = {0x58, 0xE6, 0xC5, 0x12, 0x9A, 0x80};
+uint8_t broadcastAddress[] = {0x58, 0xE6, 0xC5, 0x12, 0xxx, 0xxx};
 
 /* ====================================================================
  * タイミング制御・フィルター用パラメータ
