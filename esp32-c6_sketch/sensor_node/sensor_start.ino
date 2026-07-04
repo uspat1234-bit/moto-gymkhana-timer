@@ -46,7 +46,7 @@ EthernetUDP ethUdp;
 const int UDP_PORT = 5005;
 IPAddress broadcastIp(255, 255, 255, 255); // レイヤ3 ブロードキャスト宛先
 
-// 【変更箇所1】無線LAN (ESP-NOW) 受信側の物理アドレスを2つ定義
+// 無線LAN (ESP-NOW) 受信側の物理アドレスを2つ定義
 // 宛先1：メインLEDボード
 uint8_t broadcastAddress1[] = {0x58, 0xE6, 0xC5, 0x12, 0xXX, 0xXX};
 // 宛先2：シグナルボード
