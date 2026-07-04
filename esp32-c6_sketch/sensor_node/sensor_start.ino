@@ -5,7 +5,7 @@
  * 本プログラムは、モトジムカーナ計測システムにおける「センサー送信部」の
  * 制御基板（XIAO ESP32-C6）用ファームウェアです。
  * * [冗長化設計（Active-Active）]
- * 1. 無線ルート: ESP-NOW プロトコルによるピア・ツー・ピア超低遅延送信
+ * 1. 無線ルート: ESP-NOW プロトコルによるピア・ツー・ピア超低遅延送信 (2宛先マルチキャスト)
  * 2. 有線ルート: W5500 チップを介した有線LAN（UDPブロードキャスト）送信
  * * [環境ノイズ・運用対策]
  * - ソフトウェア・デバウンス処理（20ms継続判定）による雨滴・落ち葉のサプレッション
@@ -46,8 +46,11 @@ EthernetUDP ethUdp;
 const int UDP_PORT = 5005;
 IPAddress broadcastIp(255, 255, 255, 255); // レイヤ3 ブロードキャスト宛先
 
-// 無線LAN (ESP-NOW) 受信側（メインLEDボード）の物理アドレス
-uint8_t broadcastAddress[] = {0x58, 0xE6, 0xC5, 0x12, 0xxx, 0xxx};
+// 【変更箇所1】無線LAN (ESP-NOW) 受信側の物理アドレスを2つ定義
+// 宛先1：メインLEDボード
+uint8_t broadcastAddress1[] = {0x58, 0xE6, 0xC5, 0x12, 0xXX, 0xXX};
+// 宛先2：シグナルボード
+uint8_t broadcastAddress2[] = {0x58, 0xE6, 0xC5, 0x12, 0xYY, 0xYY}; 
 
 /* ====================================================================
  * タイミング制御・フィルター用パラメータ
@@ -65,7 +68,9 @@ bool hasTriggered = false;                // 送信完了ロックフラグ (ワ
  * パケット送信成否のハンドシェイク結果をシリアルログに出力
  */
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  Serial.print("[TX_LOG] ESP-NOW status: ");
+  Serial.print("[TX_LOG] ESP-NOW status for MAC ");
+  Serial.print(mac_addr[5], HEX); // 識別用にMACの末尾だけ表示
+  Serial.print(" : ");
   Serial.println(status == ESP_NOW_SEND_SUCCESS ? "DELIVERED" : "FAILED");
 }
 
@@ -105,17 +110,24 @@ void setup() {
     // ESP Core v3.x の厳格な型チェックを通過させるためキャスト処理を実行
     esp_now_register_send_cb((esp_now_send_cb_t)OnDataSent);
     
-    // 受信側ピア（ホスト）の登録処理
-    esp_now_peer_info_t peerInfo = {};
-    memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-    peerInfo.channel = 1;
-    peerInfo.encrypt = false;
-    
-    if (esp_now_add_peer(&peerInfo) == ESP_OK) {
-      Serial.println("[INFO] ESP-NOW Protocol initialized. Peer registered.");
-    } else {
-      Serial.println("[ERROR] Failed to register ESP-NOW peer.");
+    // 受信側ピア（宛先1）の登録処理
+    esp_now_peer_info_t peerInfo1 = {};
+    memcpy(peerInfo1.peer_addr, broadcastAddress1, 6);
+    peerInfo1.channel = 1;
+    peerInfo1.encrypt = false;
+    if (esp_now_add_peer(&peerInfo1) == ESP_OK) {
+      Serial.println("[INFO] ESP-NOW Peer 1 (MAIN) registered.");
     }
+
+    // 受信側ピア（宛先2）の登録処理
+    esp_now_peer_info_t peerInfo2 = {};
+    memcpy(peerInfo2.peer_addr, broadcastAddress2, 6);
+    peerInfo2.channel = 1;
+    peerInfo2.encrypt = false;
+    if (esp_now_add_peer(&peerInfo2) == ESP_OK) {
+      Serial.println("[INFO] ESP-NOW Peer 2 (SIGNAL) registered.");
+    }
+    
   } else {
     Serial.println("[ERROR] Failed to initialize ESP-NOW.");
   }
@@ -148,8 +160,9 @@ void loop() {
           Serial.print(now - detectionStartTime);
           Serial.println(" ms");
 
-          // ルート1: 無線パケット送出 (ESP-NOW)
-          esp_now_send(broadcastAddress, (uint8_t *)msg.c_str(), msg.length());
+          // 【変更箇所3】ルート1: 無線パケット送出 (ESP-NOW) 宛先1と宛先2へ順番に送信
+          esp_now_send(broadcastAddress1, (uint8_t *)msg.c_str(), msg.length());
+          esp_now_send(broadcastAddress2, (uint8_t *)msg.c_str(), msg.length());
           
           // ルート2: 有線パケット送出 (UDP Layer3 Broadcast)
           if (Ethernet.hardwareStatus() != EthernetNoHardware) {
