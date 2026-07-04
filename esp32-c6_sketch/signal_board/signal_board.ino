@@ -1,11 +1,6 @@
 /*
  * ====================================================================
- * MGTS (Moto Gymkhana Timing System) - Signal Board Core Unit
- * * [概要]
- * コントロールハブ連携版シグナルボード。
- * 1. "SEQ_START" 受信で2秒待機後にカウントダウン開始
- * 2. 物理センサーからの "START" タイミングでフライング判定を実施
- * 3. 判定結果(Reaction/Flying)をハブへESP-NOWとUDPで送信
+ * MGTS (Moto Gymkhana Timing System) - Signal Board Core Unit (Hub Linked)
  * ====================================================================
  */
 
@@ -29,10 +24,10 @@ IPAddress ip_eth(192, 168, 1, 30);
 IPAddress dns(192, 168, 1, 1);
 IPAddress gateway(192, 168, 1, 1);
 IPAddress subnet(255, 255, 255, 0);
-byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xE3 }; 
+byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x30 }; 
 const int UDP_PORT   = 5005;            
 
-// ★ コントロールハブのMACアドレス
+// コントロールハブのMACアドレス
 uint8_t hubAddress[] = {0x58, 0xE6, 0xC5, 0x12, 0x97, 0xCC};
 
 const unsigned long TIMING_GUARD_MS = 3000; 
@@ -62,9 +57,6 @@ Adafruit_NeoMatrix matrix = Adafruit_NeoMatrix(64, 8, LED_PIN,
 EthernetUDP ethUdp;
 char packetBuffer[512]; 
 
-/* ====================================================================
- * 計測データ構造・シグナルステート管理
- * ==================================================================== */
 struct Runner { String id; unsigned long startMillis; float result; bool isDnf; };
 std::vector<Runner> runners;         
 String nextRiderID = "X999";         
@@ -82,22 +74,22 @@ unsigned long resultLockedAt = 0;
 
 enum SignalState {
   STATE_READY,
-  STATE_DELAY,    // 受信後の2秒待機
+  STATE_DELAY,
   STATE_RED1,
   STATE_RED2,
   STATE_YELLOW,
   STATE_GREEN,
   STATE_RUNNING,
-  STATE_FLYING    // フライング（ペナルティ）状態
+  STATE_FLYING
 };
 SignalState currentSignalState = STATE_READY;
 
-unsigned long expectedGreenTime = 0; // 緑ランプが点灯する予定時刻（フライング判定の基準値）
+unsigned long expectedGreenTime = 0; 
 
 int16_t sine_table[256];
 
 /* ====================================================================
- * ユーティリティ・オーディオ関数
+ * ユーティリティ関数
  * ==================================================================== */
 String formatTime(float t) {
   if (t < 60.0) return String(t, 3);
@@ -105,20 +97,22 @@ String formatTime(float t) {
   char buf[16]; sprintf(buf, "%d.%02d.%03d", m, s, ms); return String(buf);
 }
 
-// 統括ハブへの判定結果送信（ESP-NOW & UDP ブロードキャスト）
 void notifyControlHub(String eventType, float diffSec) {
   String json = "{\"type\":\"" + eventType + "\",\"diff\":" + String(diffSec, 3) + "}";
-  
-  // ESP-NOWルート
   esp_now_send(hubAddress, (uint8_t *)json.c_str(), json.length());
-  
-  // UDPルート
   IPAddress bc(255, 255, 255, 255);
   ethUdp.beginPacket(bc, UDP_PORT);
   ethUdp.print(json);
   ethUdp.endPacket();
-  
   Serial.println("[NOTIFY] " + json);
+}
+
+void sendResultToPC(String id, float timeValue) {
+  String json = "{\"type\":\"RESULT\",\"id\":\"" + id + "\",\"time\":" + String(timeValue, 3) + "}";
+  IPAddress bc(255, 255, 255, 255);
+  ethUdp.beginPacket(bc, UDP_PORT); 
+  ethUdp.print(json); 
+  ethUdp.endPacket();
 }
 
 void completeRunner(Runner r, float timeResult, bool dnf) {
@@ -159,7 +153,6 @@ void playTone(float frequency, unsigned long duration_ms) {
   unsigned long samples_sent = 0;
   while (samples_sent < num_samples) {
     int to_send = min((unsigned long)BUF_SIZE, num_samples - samples_sent);
-    
     for (int i = 0; i < to_send; i++) {
       unsigned long current_sample = samples_sent + i;
       int env = 256; 
@@ -168,7 +161,6 @@ void playTone(float frequency, unsigned long duration_ms) {
       
       int table_idx = phase >> 24; 
       int16_t sample = (sine_table[table_idx] * env) >> 8;
-      
       buffer[i * 2] = sample; buffer[i * 2 + 1] = sample; 
       phase += phase_step; 
     }
@@ -178,7 +170,6 @@ void playTone(float frequency, unsigned long duration_ms) {
   i2s_zero_dma_buffer(I2S_NUM);
 }
 
-// 🚨 派手なペナルティ音（不協和音サイレン）
 void playPenaltySound() {
   for(int i = 0; i < 4; i++) {
     playTone(300, 150);
@@ -186,9 +177,6 @@ void playPenaltySound() {
   }
 }
 
-/* ====================================================================
- * LEDマトリクス 即時描画関数
- * ==================================================================== */
 void updateDisplay() {
   unsigned long now = millis();
   matrix.fillScreen(0); 
@@ -222,7 +210,6 @@ void updateDisplay() {
     matrix.fillRect(50, 0, 12, 8, c_green);
   }
   else if (currentSignalState == STATE_FLYING) {
-    // 🚨 フライング時は画面すべてを赤ブロック（■■■■）で点灯
     matrix.fillRect(2, 0, 12, 8, c_red); 
     matrix.fillRect(18, 0, 12, 8, c_red);
     matrix.fillRect(34, 0, 12, 8, c_red);
@@ -248,13 +235,9 @@ void updateDisplay() {
       showStatus("READY", c_green);
     }
   }
-  
   matrix.show(); 
 }
 
-/* ====================================================================
- * 上位プロトコル・コマンドハンドラ 
- * ==================================================================== */
 void processCommand(String msg) {
   unsigned long now = millis();
   
@@ -264,31 +247,25 @@ void processCommand(String msg) {
       if (doc["type"] == "ENTRY") nextRiderID = doc["id"].as<String>();
     }
   } 
-  // ★追加：ハブからのシグナル開始トリガー
   else if (msg == "SEQ_START") {
     if (currentSignalState == STATE_READY) {
       currentSignalState = STATE_DELAY;
       unsigned long delay_start = millis();
-      // 緑ランプ点灯時刻 = 2秒(Delay) + 3秒(R1,R2,Y) = 計5000ms後
       expectedGreenTime = delay_start + 5000; 
       Serial.println("[SEQ] Sequence Triggered. Expected GREEN at +" + String(expectedGreenTime - now) + "ms");
     }
   }
   else if (msg == "START") {
-    
-    // フライング・リアクションタイムの判定（シグナル進行中の場合のみ）
     if (currentSignalState >= STATE_DELAY && currentSignalState <= STATE_GREEN) {
-      float diffSec = (float)(now - expectedGreenTime) / 1000.0; // マイナスならフライング
+      float diffSec = (float)(now - expectedGreenTime) / 1000.0; 
       
       if (diffSec < 0.0) {
-        // 🚨 フライング処理！
         currentSignalState = STATE_FLYING;
-        notifyControlHub("FLYING", diffSec); // ハブへマイナス時間を送信
+        notifyControlHub("FLYING", diffSec); 
         updateDisplay();
         playPenaltySound();
-        return; // 通常のスタート処理をキャンセル
+        return; 
       } else {
-        // ✅ 正常スタート（リアクションタイム送信）
         if (currentSignalState == STATE_GREEN) {
           currentSignalState = STATE_RUNNING;
           notifyControlHub("REACTION", diffSec); 
@@ -296,7 +273,6 @@ void processCommand(String msg) {
       }
     }
     
-    // 以下、従来のスタート処理
     if (isSingleSensorMode && !runners.empty()) {
       if (now - lastStopActionTime > TIMING_GUARD_MS && now - runners[0].startMillis > TIMING_GUARD_MS) {
         lastStopActionTime = now; 
@@ -337,9 +313,6 @@ void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingDat
   processCommand(String(msg));
 }
 
-/* ====================================================================
- * 初期化ルーチン
- * ==================================================================== */
 void setup() {
   Serial.begin(115200);
   pinMode(BTN_RESET, INPUT_PULLUP);
@@ -369,7 +342,6 @@ void setup() {
   if (esp_now_init() == ESP_OK) {
     esp_now_register_recv_cb(OnDataRecv);
     
-    // ★ コントロールハブをピアとして登録（ESP-NOW送信先）
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, hubAddress, 6);
     peerInfo.channel = 1;
@@ -400,22 +372,16 @@ void setup() {
   i2s_zero_dma_buffer(I2S_NUM);
 }
 
-/* ====================================================================
- * メインループ（スケジューラ）
- * ==================================================================== */
 void loop() {
   unsigned long now = millis();
   static unsigned long last_state_update = 0;
 
-  // 🚥 [Task 0] 自動カウントダウン・発音制御シーケンス
   switch(currentSignalState) {
     case STATE_READY:
-      // 何もせず外部からの SEQ_START コマンドを待つ
       last_state_update = now;
       break;
 
     case STATE_DELAY:
-      // 2秒待機してからシグナル点灯を開始
       if (now - last_state_update > 2000) { 
         currentSignalState = STATE_RED1;
         last_state_update = now;
@@ -447,7 +413,7 @@ void loop() {
         currentSignalState = STATE_GREEN;
         last_state_update = now;
         updateDisplay();         
-        processCommand("START"); // タイマー開始（フライングチェックは内部でスルーされる）
+        processCommand("START"); 
         playTone(880, 500);      
       }
       break;
@@ -460,7 +426,6 @@ void loop() {
       break;
 
     case STATE_FLYING:
-      // ペナルティ表示を3秒間キープしたのち、初期状態に戻す
       if (now - last_state_update > 3000) {
         currentSignalState = STATE_READY;
         last_state_update = now;
@@ -468,11 +433,9 @@ void loop() {
       break;
       
     case STATE_RUNNING:
-      // 外部センサーからの STOP を待つ（自動終了は削除しました）
       break;
   }
 
-  // [Task 1] 有線LANルート パケットチェック
   int pEth = ethUdp.parsePacket();
   if (pEth) {
     int len = ethUdp.read(packetBuffer, 511);
@@ -482,13 +445,11 @@ void loop() {
     }
   }
 
-  // [Task 2] 遅延送信タスク
   if (pendingResultSend && (now - resultLockedAt > DELAY_SEND_MS)) {
     sendResultToPC(pendingResultId, pendingResultTimeVal);
     pendingResultSend = false; 
   }
 
-  // [Task 3] 物理ボタンデバウンス処理
   static bool lastBtnState = HIGH;
   static unsigned long btnPressTime = 0;
   bool currentBtnState = digitalRead(BTN_RESET);
@@ -502,12 +463,12 @@ void loop() {
       showStatus(isSingleSensorMode ? "SINGLE ON" : "SINGLE OFF", matrix.Color(255, 255, 0));
       matrix.show(); delay(1500); 
     } else if (pressDuration > 50) {
-      handleDNF();
+      Serial.println("[BTN] 手動操作による強制リセット(DNF)を実行します");
+      processCommand("FORCE_DNF");
     }
   }
   lastBtnState = currentBtnState;
 
-  // 🚥 [Task 4] マトリクスLED 定期レンダリング
   updateDisplay();
   delay(20); 
 }
