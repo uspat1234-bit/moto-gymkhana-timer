@@ -11,7 +11,7 @@
  * 3. クロス・ロック (Cross-Lock Guard):
  * シングルモード時、ゴール処理直後の3秒間は物理センサーの余韻に
  * よる意図しない「次のSTART」を強制ミュートする。
- * 4. JAGEモード (System Mode 2):
+ * 4. SIGNALモード (System Mode 2):
  * STARTセンサーではなく、SEQ_START受信から5秒後を絶対的な「0秒」
  * 起点としてタイマーを完全同期させる。
  * ====================================================================
@@ -73,7 +73,7 @@ Runner lastFinishedRunner;
 unsigned long lastStartActionTime = 0; 
 unsigned long lastStopActionTime = 0;  
 
-// boolからintによる3モード管理 (0: NORMAL, 1: SINGLE, 2: JAGE)
+// boolからintによる3モード管理 (0: NORMAL, 1: SINGLE, 2: SIGNAL)
 int systemMode = 0;
 
 // [非同期遅延送信用 ステート変数]
@@ -142,7 +142,7 @@ void processCommand(String msg) {
       if (doc["type"] == "ENTRY") nextRiderID = doc["id"].as<String>();
     }
   } 
-  // JAGEモード時はSEQ_STARTでタイマーを同期登録
+  // SIGNALモード時はSEQ_STARTでタイマーを同期登録
   else if (msg == "SEQ_START") {
     if (systemMode == 2) {
       if (runners.size() < 9) {
@@ -152,7 +152,7 @@ void processCommand(String msg) {
     }
   }
   else if (msg == "START") {
-    // JAGEモード時はSTARTセンサーでの計測開始を無視 (シグナル側でFLY判定するため)
+    // SIGNALモード時はSTARTセンサーでの計測開始を無視 (シグナル側でFLY判定するため)
     if (systemMode == 2) return; 
 
     if (systemMode == 1 && !runners.empty()) {
@@ -274,7 +274,7 @@ void loop() {
       matrix.fillScreen(0);
       if (systemMode == 0) showStatus("NORMAL", matrix.Color(0, 255, 0));
       else if (systemMode == 1) showStatus("SINGLE", matrix.Color(255, 255, 0));
-      else if (systemMode == 2) showStatus("JAGE", matrix.Color(255, 0, 255)); // JAGEはマゼンタ色
+      else if (systemMode == 2) showStatus("SIGNAL", matrix.Color(255, 0, 255)); // SIGNALはマゼンタ色
       matrix.show(); delay(1500); 
       isLongPressed = true; // このターンの長押し処理を完了
     }
@@ -304,7 +304,7 @@ void loop() {
     } else { resultStartTime = 0; }
   }
   else if (!runners.empty()) {
-    // マイナス時間（JAGEのカウントダウン）の表示対応
+    // マイナス時間（SIGNALのカウントダウン）の表示対応
     long diffMs = (long)now - (long)runners[0].startMillis;
     matrix.setTextColor(matrix.Color(255, 100, 0)); matrix.setCursor(0, 1); matrix.print(runners.size());
     matrix.drawFastVLine(6, 0, 8, matrix.Color(30, 30, 30)); 
