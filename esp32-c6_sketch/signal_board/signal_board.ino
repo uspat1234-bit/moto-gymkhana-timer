@@ -228,8 +228,12 @@ void loop() {
   uint16_t c_dim = matrix.Color(10, 10, 10), c_red = matrix.Color(255, 0, 0), c_yellow = matrix.Color(255, 180, 0), c_green = matrix.Color(0, 255, 0);
 
   if (currentSignalState == STATE_READY) {
-    showStatus("READY", matrix.Color(0, 255, 255)); 
+    showStatus("READY", matrix.Color(0, 255, 255)); // 通常の待機色はシアン
   } 
+  else if (currentSignalState == STATE_DELAY) {
+    // ★追加: SEQ_STARTを受信して2秒待機している間はオレンジ色で受信確認
+    showStatus("READY", matrix.Color(255, 128, 0)); 
+  }
   else if (currentSignalState == STATE_FLYING) {
     matrix.fillScreen(c_red);
     showStatus("FLY", matrix.Color(255, 255, 255)); 
