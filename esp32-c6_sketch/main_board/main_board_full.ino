@@ -9,9 +9,9 @@
  * ゴール直後のネットワーク輻輳を回避するため、タイム確定処理と
  * PCへのUDP送信を切り離し、1000ms後に非同期送出する。
  * 3. クロス・ロック (Cross-Lock Guard):
- * シングルモード時、ゴール処理直後の3秒間は物理センサーの余韻に
+ * SOLOモード時、ゴール処理直後の3秒間は物理センサーの余韻に
  * よる意図しない「次のSTART」を強制ミュートする。
- * 4. SIGNALモード (System Mode 2):
+ * 4. SYNCモード (System Mode 2):
  * STARTセンサーではなく、SEQ_START受信から5秒後を絶対的な「0秒」
  * 起点としてタイマーを完全同期させる。
  * ====================================================================
@@ -37,6 +37,8 @@ IPAddress gateway(192, 168, 1, 1);
 IPAddress subnet(255, 255, 255, 0);
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED }; 
 const int UDP_PORT   = 5005;            
+
+uint8_t hubAddress[] = {0x58, 0xE6, 0xC5, 0x12, 0x97, 0xCC}; // ESP-NOW 送信先ハブ
 
 // システム・ガードタイム設定
 const unsigned long TIMING_GUARD_MS = 3000; // チャタリング・不正連続入力防止 (ms)
@@ -73,7 +75,7 @@ Runner lastFinishedRunner;
 unsigned long lastStartActionTime = 0; 
 unsigned long lastStopActionTime = 0;  
 
-// boolからintによる3モード管理 (0: NORMAL, 1: SINGLE, 2: SIGNAL)
+// モード管理 (0: MULT, 1: SOLO, 2: SYNC)
 int systemMode = 0;
 
 // [非同期遅延送信用 ステート変数]
@@ -93,10 +95,16 @@ String formatTime(float t) {
 
 void sendResultToPC(String id, float timeValue) {
   String json = "{\"type\":\"RESULT\",\"id\":\"" + id + "\",\"time\":" + String(timeValue, 3) + "}";
+  
+  // UDPブロードキャスト
   IPAddress bc(255, 255, 255, 255);
   ethUdp.beginPacket(bc, UDP_PORT); 
   ethUdp.print(json); 
   ethUdp.endPacket();
+  
+  // ESP-NOWでハブへ送信
+  esp_now_send(hubAddress, (uint8_t *)json.c_str(), json.length());
+  
   Serial.println("[TX_PC] Delayed RESULT packet sent: " + json);
 }
 
@@ -142,7 +150,7 @@ void processCommand(String msg) {
       if (doc["type"] == "ENTRY") nextRiderID = doc["id"].as<String>();
     }
   } 
-  // SIGNALモード時はSEQ_STARTでタイマーを同期登録
+  // SYNCモード時はSEQ_STARTでタイマーを同期登録
   else if (msg == "SEQ_START") {
     if (systemMode == 2) {
       if (runners.size() < 9) {
@@ -152,21 +160,21 @@ void processCommand(String msg) {
     }
   }
   else if (msg == "START") {
-    // SIGNALモード時はSTARTセンサーでの計測開始を無視 (シグナル側でFLY判定するため)
+    // SYNCモード時はSTARTセンサーでの計測開始を無視 (シグナル側でFLY判定するため)
     if (systemMode == 2) return; 
 
     if (systemMode == 1 && !runners.empty()) {
-      // [シングルモード：ゴール時の処理] (※マイナス時間での誤作動を防ぐためlongキャスト)
+      // [SOLOモード：ゴール時の処理] (※マイナス時間での誤作動を防ぐためlongキャスト)
       if (now - lastStopActionTime > TIMING_GUARD_MS && (long)now - (long)runners[0].startMillis > TIMING_GUARD_MS) {
         lastStopActionTime = now; // [最優先] 即座にロック確保
         completeRunner(runners[0], (float)((long)now - (long)runners[0].startMillis) / 1000.0, false);
         runners.erase(runners.begin());
       }
     } else {
-      // [通常モード：スタート または シングルモード：新規スタート]
+      // [MULTモード：スタート または SOLOモード：新規スタート]
       if (now - lastStartActionTime > TIMING_GUARD_MS) {
         
-        // クロス・ロック: シングルモード時、ゴール直後の3秒間は物理センサーの余韻による誤検知STARTを弾く
+        // クロス・ロック: SOLOモード時、ゴール直後の3秒間は物理センサーの余韻による誤検知STARTを弾く
         if (systemMode == 1 && (now - lastStopActionTime < TIMING_GUARD_MS)) {
           return; 
         }
@@ -181,6 +189,7 @@ void processCommand(String msg) {
   } 
   else if (msg == "STOP") {
     // [全モード共通：ゴール時の処理]
+    // どのモードであっても、FLY判定などを除外した純粋な生タイムのみを送信する
     if (now - lastStopActionTime > TIMING_GUARD_MS) {
       if (!runners.empty() && (long)now - (long)runners[0].startMillis > TIMING_GUARD_MS) {
         lastStopActionTime = now; // [最優先] 即座にロック確保
@@ -233,6 +242,13 @@ void setup() {
   
   if (esp_now_init() == ESP_OK) {
     esp_now_register_recv_cb(OnDataRecv);
+    
+    // ★ コントロールハブへの送信を許可するためのピア登録
+    esp_now_peer_info_t peer = {}; 
+    memcpy(peer.peer_addr, hubAddress, 6); 
+    peer.channel = 1; 
+    peer.encrypt = false; 
+    esp_now_add_peer(&peer);
   }
 }
 
@@ -252,13 +268,13 @@ void loop() {
     }
   }
 
-  // [Task 2] 非同期遅延送信タスク (確定から1秒後にPCへ送信)
+  // [Task 2] 非同期遅延送信タスク (確定から1秒後にPC・ハブへ一斉送信)
   if (pendingResultSend && (now - resultLockedAt > DELAY_SEND_MS)) {
     sendResultToPC(pendingResultId, pendingResultTimeVal);
     pendingResultSend = false; // 送信完了としてフラグをリセット
   }
 
-  // [Task 3] ★変更箇所4: 物理ボタンで3つのモードをループ切替 (長押し確定時に即時切替)
+  // [Task 3] 物理ボタンデバウンス処理 & 3モードループ切替 (長押し確定時に即時切替)
   static bool lastBtnState = HIGH;
   static unsigned long btnPressTime = 0;
   static bool isLongPressed = false; // 長押し処理済みフラグ
@@ -272,9 +288,9 @@ void loop() {
     if (!isLongPressed && (now - btnPressTime > 2000)) {
       systemMode = (systemMode + 1) % 3;
       matrix.fillScreen(0);
-      if (systemMode == 0) showStatus("NORMAL", matrix.Color(0, 255, 0));
-      else if (systemMode == 1) showStatus("SINGLE", matrix.Color(255, 255, 0));
-      else if (systemMode == 2) showStatus("SIGNAL", matrix.Color(255, 0, 255)); // SIGNALはマゼンタ色
+      if (systemMode == 0) showStatus("MULT", matrix.Color(0, 255, 0));
+      else if (systemMode == 1) showStatus("SOLO", matrix.Color(255, 255, 0));
+      else if (systemMode == 2) showStatus("SYNC", matrix.Color(255, 0, 255)); // SYNCはマゼンタ色
       matrix.show(); delay(1500); 
       isLongPressed = true; // このターンの長押し処理を完了
     }
@@ -304,7 +320,7 @@ void loop() {
     } else { resultStartTime = 0; }
   }
   else if (!runners.empty()) {
-    // マイナス時間（SIGNALのカウントダウン）の表示対応
+    // マイナス時間（SYNCのカウントダウン）の表示対応
     long diffMs = (long)now - (long)runners[0].startMillis;
     matrix.setTextColor(matrix.Color(255, 100, 0)); matrix.setCursor(0, 1); matrix.print(runners.size());
     matrix.drawFastVLine(6, 0, 8, matrix.Color(30, 30, 30)); 
@@ -322,8 +338,8 @@ void loop() {
   else {
     // モードごとの待機(READY)文字の変更
     if (systemMode == 1) showStatus("S-RDY:" + nextRiderID, matrix.Color(0, 255, 255));
-    else if (systemMode == 2) showStatus("J-RDY:" + nextRiderID, matrix.Color(255, 0, 255));
-    else showStatus("RDY:" + nextRiderID, matrix.Color(0, 255, 0));
+    else if (systemMode == 2) showStatus("Y-RDY:" + nextRiderID, matrix.Color(255, 0, 255));
+    else showStatus("M-RDY:" + nextRiderID, matrix.Color(0, 255, 0));
   }
   
   matrix.show(); 
