@@ -2,12 +2,10 @@
  * ====================================================================
  * MGTS (Moto Gymkhana Timing System) - Signal Board Core Unit
  * * [Architecture Highlights]
- * 1. 自律型カウントダウンシーケンス (Autonomous Countdown Sequence):
- * ハブからの開始トリガーを受信後、内部ステートマシンにより
- * 赤・黄・緑のシグナル遷移と音声出力をミリ秒精度で厳密に制御。
- * 2. キャストガード・フライング判定 (Cast-Guard Flying Detection):
- * スタートセンサー検知時、符号付き整数への強制キャストを挟むことで
- * タイマーのアンダーフローを完全に防ぎ、ミリ秒単位の正確な差分を検出。
+ * 1. 自律型カウントダウンシーケンス (Autonomous Countdown Sequence)
+ * 2. キャストガード・フライング判定 (Cast-Guard Flying Detection)
+ * 3. 共通エッジ・ステート管理: メイン基板同様、基本を X999 とし
+ * ENTRY受信でIDを更新。ペナルティ検知時はIDを付与して送信。
  * ====================================================================
  */
 
@@ -20,6 +18,7 @@
 #include <Adafruit_NeoMatrix.h>
 #include <driver/i2s.h>
 #include <math.h>
+#include <ArduinoJson.h> // ★追加: ENTRYパケット解析用
 
 /* ====================================================================
  * L3 ネットワーク構成 (有線LAN / W5500)
@@ -70,6 +69,10 @@ bool hasStartedPhysical = false;
 enum SignalState { STATE_READY, STATE_DELAY, STATE_RED1, STATE_RED2, STATE_YELLOW, STATE_GREEN, STATE_FLYING };
 SignalState currentSignalState = STATE_READY;
 
+// ★追加: ID管理 (メイン基板と統一)
+String nextRiderID = "X999";
+String currentRiderId = "X999";
+
 int16_t sine_table[256];
 
 /* ====================================================================
@@ -81,8 +84,9 @@ void showStatus(String txt, uint16_t color) {
   matrix.setCursor(x >= 0 ? x : 0, 1); matrix.print(txt);
 }
 
-void notifyControlHub(String eventType, float diffSec) {
-  String json = "{\"type\":\"" + eventType + "\",\"diff\":" + String(diffSec, 3) + "}";
+// ★修正: 送信時にライダーIDを含めるように変更
+void notifyControlHub(String eventType, String id, float diffSec) {
+  String json = "{\"type\":\"" + eventType + "\",\"id\":\"" + id + "\",\"diff\":" + String(diffSec, 3) + "}";
   esp_now_send(hubAddress, (uint8_t *)json.c_str(), json.length());
   Serial.println("[NOTIFY] " + json);
 }
@@ -115,13 +119,26 @@ void playPenaltySound() {
 void processCommand(String rawMsg) {
   String msg = rawMsg; msg.trim(); 
   
+  // ★追加: ENTRYパケットの解析 (メイン基板と同じロジック)
+  if (msg.startsWith("{")) {
+    JsonDocument doc;
+    if (!deserializeJson(doc, msg)) {
+      if (doc["type"] == "ENTRY") nextRiderID = doc["id"].as<String>();
+    }
+    return; // JSONパケットの処理はここで終了
+  }
+  
   if (msg == "SEQ_START") {
+    // ★追加: シーケンス開始時に走者を確定し、次の待機者をX999にリセット
+    currentRiderId = nextRiderID;
+    nextRiderID = "X999";
+    
     seqStartTime = millis();
     expectedGreenTime = seqStartTime + 5000; 
     isSequenceActive = true;
     hasStartedPhysical = false;
     currentSignalState = STATE_DELAY;
-    Serial.println("[SEQ] Start sequence initiated.");
+    Serial.println("[SEQ] Start sequence initiated for ID: " + currentRiderId);
   }
   else if (msg == "START") {
     if (!isSequenceActive || hasStartedPhysical) return;
@@ -133,10 +150,12 @@ void processCommand(String rawMsg) {
     if (diffMs < 0) { 
       currentSignalState = STATE_FLYING; 
       flyingStartTime = millis();
-      notifyControlHub("FLYING", diffSec); 
+      // ★修正: フライング時に確定済みのIDを付与して送信
+      notifyControlHub("FLYING", currentRiderId, diffSec); 
       playPenaltySound(); 
     } else {
-      notifyControlHub("REACTION", diffSec); 
+      // ★修正: リアクション時に確定済みのIDを付与して送信
+      notifyControlHub("REACTION", currentRiderId, diffSec); 
     }
   } 
   else if (msg == "FORCE_DNF") { 
@@ -228,11 +247,12 @@ void loop() {
   uint16_t c_dim = matrix.Color(10, 10, 10), c_red = matrix.Color(255, 0, 0), c_yellow = matrix.Color(255, 180, 0), c_green = matrix.Color(0, 255, 0);
 
   if (currentSignalState == STATE_READY) {
-    showStatus("READY", matrix.Color(0, 255, 255)); // 通常の待機色はシアン
+    // ★修正: 現在待機中のライダーID（X999やA001）を表示
+    showStatus("RDY:" + nextRiderID, matrix.Color(0, 255, 255)); 
   } 
   else if (currentSignalState == STATE_DELAY) {
-    // ★追加: SEQ_STARTを受信して2秒待機している間はオレンジ色で受信確認
-    showStatus("READY", matrix.Color(255, 128, 0)); 
+    // ★修正: シーケンス進行中のライダーIDを表示
+    showStatus("SQ:" + currentRiderId, matrix.Color(255, 128, 0)); 
   }
   else if (currentSignalState == STATE_FLYING) {
     matrix.fillScreen(c_red);
