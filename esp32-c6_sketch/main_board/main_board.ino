@@ -241,20 +241,27 @@ void loop() {
     pendingResultSend = false; // 送信完了としてフラグをリセット
   }
 
-  // [Task 3] 物理ボタンデバウンス処理
+  // [Task 3] 物理ボタンデバウンス処理 (長押し確定時に即時切替)
   static bool lastBtnState = HIGH;
   static unsigned long btnPressTime = 0;
+  static bool isLongPressed = false; // 長押し処理済みフラグ
   bool currentBtnState = digitalRead(BTN_RESET);
+
   if (currentBtnState == LOW && lastBtnState == HIGH) {
     btnPressTime = now; 
-  } else if (currentBtnState == HIGH && lastBtnState == LOW) {
-    unsigned long pressDuration = now - btnPressTime;
-    if (pressDuration > 2000) {
+    isLongPressed = false;
+  } else if (currentBtnState == LOW && lastBtnState == LOW) {
+    // 押しっぱなしの状態で2秒経過したら即座にモードを切り替える
+    if (!isLongPressed && (now - btnPressTime > 2000)) {
       isSingleSensorMode = !isSingleSensorMode;
       matrix.fillScreen(0);
       showStatus(isSingleSensorMode ? "SINGLE ON" : "SINGLE OFF", matrix.Color(255, 255, 0));
       matrix.show(); delay(1500); 
-    } else if (pressDuration > 50) {
+      isLongPressed = true; // このターンの長押し処理を完了
+    }
+  } else if (currentBtnState == HIGH && lastBtnState == LOW) {
+    // 長押しされていなければ短押し(DNF)として処理
+    if (!isLongPressed && (now - btnPressTime > 50)) {
       handleDNF();
     }
   }
