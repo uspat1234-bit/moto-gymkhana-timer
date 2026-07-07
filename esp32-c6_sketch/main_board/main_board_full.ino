@@ -14,6 +14,9 @@
  * 4. SYNCモード (System Mode 2):
  * STARTセンサーではなく、SEQ_START受信から5秒後を絶対的な「0秒」
  * 起点としてタイマーを完全同期させる。
+ * 5. SEQ_START レートリミット (Rate Limit Guard):
+ * シグナル開始指示の連打やネットワークの重複パケットを防ぐため、
+ * 一度受信してから5秒間は後続のSEQ_STARTを完全に無視する。
  * ====================================================================
  */
 
@@ -74,6 +77,9 @@ Runner lastFinishedRunner;
 
 unsigned long lastStartActionTime = 0; 
 unsigned long lastStopActionTime = 0;  
+
+// ★追加: SEQ_STARTの連打防止用ステート変数
+unsigned long lastSeqStartTime = 0; 
 
 // モード管理 (0: MULT, 1: SOLO, 2: SYNC)
 int systemMode = 0;
@@ -152,6 +158,10 @@ void processCommand(String msg) {
   } 
   // SYNCモード時はSEQ_STARTでタイマーを同期登録
   else if (msg == "SEQ_START") {
+    // ★追加: 5秒(5000ms)以内の連続受信は、連打（チャタリング）とみなして完全無視
+    if (now - lastSeqStartTime < 5000) return;
+    lastSeqStartTime = now;
+
     if (systemMode == 2) {
       if (runners.size() < 9) {
         runners.push_back({nextRiderID, now + 5000, 0.0, false}); // 5000ms後を0.000秒とする
