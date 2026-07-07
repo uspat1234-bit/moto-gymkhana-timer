@@ -1,0 +1,17 @@
+anyio==4.12.0
+certifi==2025.11.12
+flet==0.28.3
+flet-desktop==0.28.3
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.11
+libusb1==3.4.0
+msgpack==1.1.2
+ndeflib==0.3.3
+nfcpy==1.0.4
+oauthlib==3.3.1
+pyDes==2.0.1
+pyserial==3.5
+repath==0.9.0
+six==1.17.0
