@@ -12,6 +12,7 @@
 #include <esp_wifi.h>
 
 // --- 送信先 ESP-NOW MACアドレス ---
+// ※実際のシグナル基板とメイン基板のMACアドレスに書き換えてください
 uint8_t signalBoardMac[] = { 0x58, 0xE6, 0xC5, 0x12, 0x95, 0xXX };
 uint8_t mainBoardMac[]   = { 0x58, 0xE6, 0xC5, 0x12, 0xD5, 0xYY };
 
@@ -117,4 +118,8 @@ void loop() {
     pcData.trim(); // ゴミとなる改行コードや空白を除去
     
     // データが空でなければ、そのまま全基板へ転送
-    if (pcData.length() >
+    if (pcData.length() > 0) {
+      sendCommand(pcData);
+    }
+  }
+}
