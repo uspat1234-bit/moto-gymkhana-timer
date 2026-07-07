@@ -22,7 +22,7 @@ except ImportError:
 
 # 有線UDP通信設定
 UDP_IP = "0.0.0.0"
-UDP_PORT = 5055
+UDP_PORT = 5005
 
 class MotoGymkhanaApp:
     # ====================================================================
