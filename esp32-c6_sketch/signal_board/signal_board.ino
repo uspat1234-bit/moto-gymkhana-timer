@@ -6,6 +6,9 @@
  * 2. キャストガード・フライング判定 (Cast-Guard Flying Detection)
  * 3. 共通エッジ・ステート管理: メイン基板同様、基本を X999 とし
  * ENTRY受信でIDを更新。ペナルティ検知時はIDを付与して送信。
+ * 4. 多重起動ロック (Sequence Execution Lock):
+ * 既にシグナルが進行している状態(isSequenceActive)で
+ * 重複してSEQ_STARTを受信した場合、連打とみなして安全に破棄する。
  * ====================================================================
  */
 
@@ -18,7 +21,7 @@
 #include <Adafruit_NeoMatrix.h>
 #include <driver/i2s.h>
 #include <math.h>
-#include <ArduinoJson.h> // ★追加: ENTRYパケット解析用
+#include <ArduinoJson.h>
 
 /* ====================================================================
  * L3 ネットワーク構成 (有線LAN / W5500)
@@ -69,7 +72,6 @@ bool hasStartedPhysical = false;
 enum SignalState { STATE_READY, STATE_DELAY, STATE_RED1, STATE_RED2, STATE_YELLOW, STATE_GREEN, STATE_FLYING };
 SignalState currentSignalState = STATE_READY;
 
-// ★追加: ID管理 (メイン基板と統一)
 String nextRiderID = "X999";
 String currentRiderId = "X999";
 
@@ -84,7 +86,6 @@ void showStatus(String txt, uint16_t color) {
   matrix.setCursor(x >= 0 ? x : 0, 1); matrix.print(txt);
 }
 
-// ★修正: 送信時にライダーIDを含めるように変更
 void notifyControlHub(String eventType, String id, float diffSec) {
   String json = "{\"type\":\"" + eventType + "\",\"id\":\"" + id + "\",\"diff\":" + String(diffSec, 3) + "}";
   esp_now_send(hubAddress, (uint8_t *)json.c_str(), json.length());
@@ -119,17 +120,22 @@ void playPenaltySound() {
 void processCommand(String rawMsg) {
   String msg = rawMsg; msg.trim(); 
   
-  // ★追加: ENTRYパケットの解析 (メイン基板と同じロジック)
   if (msg.startsWith("{")) {
     JsonDocument doc;
     if (!deserializeJson(doc, msg)) {
       if (doc["type"] == "ENTRY") nextRiderID = doc["id"].as<String>();
     }
-    return; // JSONパケットの処理はここで終了
+    return;
   }
   
   if (msg == "SEQ_START") {
-    // ★追加: シーケンス開始時に走者を確定し、次の待機者をX999にリセット
+    // ★追加: 多重起動ロック (連打ガード)
+    // 既にシグナル進行中の場合は、追加の開始要求を完全に無視する
+    if (isSequenceActive) {
+      Serial.println("[SEQ] Ignore: Sequence already running.");
+      return;
+    }
+
     currentRiderId = nextRiderID;
     nextRiderID = "X999";
     
@@ -150,11 +156,9 @@ void processCommand(String rawMsg) {
     if (diffMs < 0) { 
       currentSignalState = STATE_FLYING; 
       flyingStartTime = millis();
-      // ★修正: フライング時に確定済みのIDを付与して送信
       notifyControlHub("FLYING", currentRiderId, diffSec); 
       playPenaltySound(); 
     } else {
-      // ★修正: リアクション時に確定済みのIDを付与して送信
       notifyControlHub("REACTION", currentRiderId, diffSec); 
     }
   } 
@@ -247,11 +251,9 @@ void loop() {
   uint16_t c_dim = matrix.Color(10, 10, 10), c_red = matrix.Color(255, 0, 0), c_yellow = matrix.Color(255, 180, 0), c_green = matrix.Color(0, 255, 0);
 
   if (currentSignalState == STATE_READY) {
-    // ★修正: 現在待機中のライダーID（X999やA001）を表示
     showStatus("RDY:" + nextRiderID, matrix.Color(0, 255, 255)); 
   } 
   else if (currentSignalState == STATE_DELAY) {
-    // ★修正: シーケンス進行中のライダーIDを表示
     showStatus("SQ:" + currentRiderId, matrix.Color(255, 128, 0)); 
   }
   else if (currentSignalState == STATE_FLYING) {
