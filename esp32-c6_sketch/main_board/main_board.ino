@@ -7,7 +7,7 @@
  * 最優先でタイムスタンプを更新し、重複パケットを即座に破棄。
  * 2. 非同期遅延送信 (Asynchronous Delayed Transmission):
  * ゴール直後のネットワーク輻輳を回避するため、タイム確定処理と
- * PCへのUDP送信を切り離し、1000ms後に非同期送出する。
+ * PCへのUDP/ESP-NOW送信を切り離し、1000ms後に非同期送出する。
  * 3. クロス・ロック (Cross-Lock Guard):
  * シングルモード時、ゴール処理直後の3秒間は物理センサーの余韻に
  * よる意図しない「次のSTART」を強制ミュートする。
@@ -34,6 +34,9 @@ IPAddress gateway(192, 168, 1, 1);
 IPAddress subnet(255, 255, 255, 0);
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED }; 
 const int UDP_PORT   = 5005;            
+
+// ★追加: ESP-NOW 送信先ハブのMACアドレス（実際のハブのMACに合わせてください）
+uint8_t hubAddress[] = {0x58, 0xE6, 0xC5, 0x12, 0x97, 0xCC};
 
 // システム・ガードタイム設定
 const unsigned long TIMING_GUARD_MS = 3000; // チャタリング・不正連続入力防止 (ms)
@@ -88,10 +91,16 @@ String formatTime(float t) {
 
 void sendResultToPC(String id, float timeValue) {
   String json = "{\"type\":\"RESULT\",\"id\":\"" + id + "\",\"time\":" + String(timeValue, 3) + "}";
+  
+  // 1. 有線LAN(UDP)経由での送信
   IPAddress bc(255, 255, 255, 255);
   ethUdp.beginPacket(bc, UDP_PORT); 
   ethUdp.print(json); 
   ethUdp.endPacket();
+  
+  // 2. ★追加: ESP-NOW経由での送信 (ハブ経由でPCのシリアルへ届けるため)
+  esp_now_send(hubAddress, (uint8_t *)json.c_str(), json.length());
+
   Serial.println("[TX_PC] Delayed RESULT packet sent: " + json);
 }
 
@@ -216,6 +225,13 @@ void setup() {
   
   if (esp_now_init() == ESP_OK) {
     esp_now_register_recv_cb(OnDataRecv);
+    
+    // ★追加: コントロールハブへの送信を許可するためのピア登録
+    esp_now_peer_info_t peer = {}; 
+    memcpy(peer.peer_addr, hubAddress, 6); 
+    peer.channel = 1; 
+    peer.encrypt = false; 
+    esp_now_add_peer(&peer);
   }
 }
 
@@ -235,7 +251,7 @@ void loop() {
     }
   }
 
-  // [Task 2] ★非同期遅延送信タスク (確定から1秒後にPCへ送信)
+  // [Task 2] ★非同期遅延送信タスク (確定から1秒後にPC・ハブへ送信)
   if (pendingResultSend && (now - resultLockedAt > DELAY_SEND_MS)) {
     sendResultToPC(pendingResultId, pendingResultTimeVal);
     pendingResultSend = false; // 送信完了としてフラグをリセット
