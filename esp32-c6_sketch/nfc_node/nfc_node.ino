@@ -17,10 +17,10 @@
 // --- 送信先MACアドレスの設定 ---
 // ====================================================================
 // 1. M5StickC PLUS2 (ハブ) のMACアドレス
-uint8_t hubMac[] = { 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF  };
+uint8_t hubMac[] = { 0x58, 0xE6, 0xC5, 0x12, 0x9A, 0x80 };
 
 // 2. ★メイン基板 (LEDマトリクスが付いているESP32) のMACアドレス
-// ※実際のメイン基板のMACアドレスに書き換えてください
+// ※実際のメイン基板のMACアドレスに必ず書き換えてください！
 uint8_t mainBoardMac[] = { 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF };
 
 
@@ -67,7 +67,8 @@ void setup(void) {
     while (1); // エラー停止
   }
   
-  esp_now_register_send_cb(OnDataSent);
+  // ★ここでコールバック関数の型を強制変換してエラーを回避（ESP32 Core v3.x対応）
+  esp_now_register_send_cb(reinterpret_cast<esp_now_send_cb_t>(OnDataSent));
   
   esp_now_peer_info_t peerInfo = {};
   peerInfo.channel = 1;
