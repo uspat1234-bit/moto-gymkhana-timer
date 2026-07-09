@@ -1,4 +1,4 @@
- # ====================================================================
+# ====================================================================
 # 1. ライブラリインポート・通信設定
 # ====================================================================
 import flet as ft
@@ -74,6 +74,8 @@ class MotoGymkhanaApp:
             content=ft.Column([
                 ft.ElevatedButton("+1秒 (パイロンタッチ)", on_click=lambda e: self.apply_penalty(1, "PT"), bgcolor=ft.Colors.ORANGE_800, color=ft.Colors.WHITE, width=250),
                 ft.ElevatedButton("+1秒 (足つき)", on_click=lambda e: self.apply_penalty(1, "足つき"), bgcolor=ft.Colors.ORANGE_800, color=ft.Colors.WHITE, width=250),
+                # ★追加：手動フライング加算ボタン
+                ft.ElevatedButton("+1秒 (フライング)", on_click=lambda e: self.apply_penalty(1, "フライング"), bgcolor=ft.Colors.RED_600, color=ft.Colors.WHITE, width=250),
                 ft.ElevatedButton("+3秒 (脱輪等)", on_click=lambda e: self.apply_penalty(3, "脱輪"), bgcolor=ft.Colors.RED_800, color=ft.Colors.WHITE, width=250),
                 ft.Divider(),
                 ft.ElevatedButton("MC (ミスコース) にする", on_click=lambda e: self.apply_penalty(999, "MC"), bgcolor=ft.Colors.PURPLE_800, color=ft.Colors.WHITE, width=250),
@@ -138,17 +140,20 @@ class MotoGymkhanaApp:
         if not self.current_edit_record: return
         rec = self.current_edit_record
         
+        # ★修正：memo_text（備考）には一切触れず、penalty_text のみを書き換える
         if note_text == "RESET":
             rec["penalty"] = 0
             rec["is_mc"] = False
-            rec["note"] = ""
+            rec["penalty_text"] = ""
         elif note_text == "MC":
             rec["is_mc"] = True
-            rec["note"] = "MC"
+            rec["penalty_text"] = "MC"
         else:
             rec["penalty"] += seconds
-            rec["note"] = f"{rec['note']} [{note_text}]".strip()
+            if rec["penalty_text"] == "MC":
+                rec["penalty_text"] = "" # MCから通常のペナルティ加算に復帰した場合
             rec["is_mc"] = False
+            rec["penalty_text"] = f"{rec['penalty_text']} [{note_text}]".strip()
             
         if rec["is_mc"]:
             rec["time_float"] = float('inf')
@@ -165,7 +170,6 @@ class MotoGymkhanaApp:
     def recalculate_results(self):
         if not self.results_log: return
         
-        # 1. 全履歴からグローバルのトップタイムを取得
         valid_runs = [r for r in self.results_log if not r.get("is_mc")]
         global_top = min([r["time_float"] for r in valid_runs]) if valid_runs else None
         class_tops = {}
@@ -174,7 +178,6 @@ class MotoGymkhanaApp:
             if c not in class_tops or r["time_float"] < class_tops[c]:
                 class_tops[c] = r["time_float"]
 
-        # 2. 全レコードに対してタイム比率を計算し、順位をリセット
         for r in self.results_log:
             r["is_best"] = False
             r["overall_rank"] = "-"
@@ -186,7 +189,6 @@ class MotoGymkhanaApp:
                 if global_top: r["top_ratio"] = f"{(r['time_float'] / global_top) * 100:.2f}%"
                 if class_tops.get(r["class"]): r["class_ratio"] = f"{(r['time_float'] / class_tops[r['class']]) * 100:.2f}%"
 
-        # 3. 各選手の「ベストタイム」を抽出
         best_runs_map = {}
         for r in self.results_log:
             bib = r["bib"]
@@ -200,7 +202,6 @@ class MotoGymkhanaApp:
                     if r["time_float"] < curr_best["time_float"]:
                         best_runs_map[bib] = r
 
-        # 4. ベストタイム同士で順位付けを行う
         best_valid_list = [r for r in best_runs_map.values() if not r.get("is_mc")]
         best_valid_list.sort(key=lambda x: x["time_float"])
         
@@ -213,7 +214,6 @@ class MotoGymkhanaApp:
             for i, r in enumerate(c_best):
                 r["class_rank"] = i + 1
 
-        # ベストフラグを立てる
         for r in best_runs_map.values():
             r["is_best"] = True
 
@@ -262,23 +262,22 @@ class MotoGymkhanaApp:
                     if res["bib"] == info["bib"] and res["base_time"] == run_time:
                         if current_time - res.get("recv_time", 0) < 3.0: return
                 
-                note_str = " / ".join(self.runner_notes.pop(rider_id, [])) or ""
+                # ★修正：センサー由来の通知（React/FLYING等）は memo_text に格納する
+                memo_str = " / ".join(self.runner_notes.pop(rider_id, [])) or ""
                 
                 new_record = {
                     "bib": info["bib"], "name": info["name"], "class": r_class,
                     "base_time": run_time, "penalty": 0, "is_mc": False,
-                    "time_float": run_time, "time_str": time_str, "note": note_str,
+                    "time_float": run_time, "time_str": time_str,
+                    "penalty_text": "", "memo_text": memo_str, # ★2つのテキスト欄に分離
                     "overall_rank": "-", "class_rank": "-", "top_ratio": "-", "class_ratio": "-",
                     "is_best": False, "recv_time": current_time
                 }
                 self.results_log.append(new_record)
-                
-                # 計算メソッドを呼ぶことで全員のフラグと比率が更新される
                 self.recalculate_results()
                 
                 sec = int(run_time)
                 ms = int(round((run_time - sec) * 1000))
-                # 音声読み上げには、今回の走行に対する比率を読ませる
                 top_ratio_str = new_record['top_ratio'].replace('%','') if new_record['top_ratio'] != '-' else '測定不能'
                 class_ratio_str = new_record['class_ratio'].replace('%','') if new_record['class_ratio'] != '-' else '測定不能'
                 
@@ -304,14 +303,14 @@ class MotoGymkhanaApp:
     # ====================================================================
     def update_result_table(self):
         def create_table_frame():
+            # ★カラムに「ペナルティ」を追加し、「備考」と分離
             return ft.DataTable(columns=[
                     ft.DataColumn(label=ft.Text("順位")), ft.DataColumn(label=ft.Text("ｸﾗｽ")), ft.DataColumn(label=ft.Text("ゼッケン")),
                     ft.DataColumn(label=ft.Text("名前")), ft.DataColumn(label=ft.Text("最終タイム")), ft.DataColumn(label=ft.Text("トップ比")),
-                    ft.DataColumn(label=ft.Text("ｸﾗｽ比")), ft.DataColumn(label=ft.Text("備考")), ft.DataColumn(label=ft.Text("編集")),
+                    ft.DataColumn(label=ft.Text("ｸﾗｽ比")), ft.DataColumn(label=ft.Text("ペナルティ")), ft.DataColumn(label=ft.Text("備考")), ft.DataColumn(label=ft.Text("編集")),
                 ], rows=[])
 
         exist_classes = sorted(list(set([r["class"] for r in self.results_log])))
-        # ★「全履歴」タブを追加
         tab_list = ["総合"] + exist_classes + ["全履歴"]
         new_tabs = []
         
@@ -319,10 +318,8 @@ class MotoGymkhanaApp:
             table = create_table_frame()
             
             if tab_name == "全履歴":
-                # 全履歴タブ: 新しい記録が上に来るように逆順で全表示
                 records = list(reversed(self.results_log))
             else:
-                # 順位表タブ: ベストタイムのみを抽出し、MCを下に回してタイム順ソート
                 if tab_name == "総合": records = [r for r in self.results_log if r.get("is_best")]
                 else: records = [r for r in self.results_log if r.get("is_best") and r["class"] == tab_name]
                 records.sort(key=lambda x: (x.get("is_mc", False), x["time_float"]))
@@ -333,10 +330,17 @@ class MotoGymkhanaApp:
                 time_color = ft.Colors.PURPLE_400 if r.get("is_mc") else (ft.Colors.RED_400 if r["penalty"] > 0 else ft.Colors.WHITE)
                 time_display = "MC" if r.get("is_mc") else r["time_str"]
                 
+                # 自動検知されたFLYINGは備考欄で赤字に
+                memo_color = ft.Colors.RED_400 if "FLYING" in r["memo_text"] else ft.Colors.WHITE
+                memo_weight = ft.FontWeight.BOLD if "FLYING" in r["memo_text"] else ft.FontWeight.NORMAL
+                
                 table.rows.append(ft.DataRow(cells=[
                     ft.DataCell(ft.Text(rank_str)), ft.DataCell(ft.Text(r["class"])), ft.DataCell(ft.Text(r["bib"])), ft.DataCell(ft.Text(r["name"])),
                     ft.DataCell(ft.Text(time_display, weight=ft.FontWeight.BOLD, color=time_color)),
-                    ft.DataCell(ft.Text(r["top_ratio"])), ft.DataCell(ft.Text(r["class_ratio"])), ft.DataCell(ft.Text(r["note"])),
+                    ft.DataCell(ft.Text(r["top_ratio"])), ft.DataCell(ft.Text(r["class_ratio"])),
+                    # ペナルティと備考をそれぞれ独立したセルとして表示
+                    ft.DataCell(ft.Text(r["penalty_text"], color=ft.Colors.RED_400)), 
+                    ft.DataCell(ft.Text(r["memo_text"], color=memo_color, weight=memo_weight)),
                     ft.DataCell(ft.IconButton(icon=ft.Icons.ADD_ALERT, icon_size=20, icon_color=ft.Colors.ORANGE_400, on_click=lambda e, rec=r: self.open_penalty_dialog(rec)))
                 ]))
             new_tabs.append(ft.Tab(text=tab_name, content=ft.Column([table], scroll=ft.ScrollMode.AUTO)))
@@ -350,11 +354,12 @@ class MotoGymkhanaApp:
             try:
                 with open(e.path, "w", encoding="utf-8-sig", newline="") as f:
                     writer = csv.writer(f)
-                    writer.writerow(["出走順", "ベストフラグ", "クラス", "ゼッケン", "名前", "ベースタイム", "ペナルティ", "最終タイム", "総合順位", "クラス順位", "トップ比", "クラス比", "ペナルティ/備考"])
+                    # ★CSVヘッダーも「ペナルティ内容」と「備考」に分離
+                    writer.writerow(["出走順", "ベストフラグ", "クラス", "ゼッケン", "名前", "ベースタイム", "ペナルティ加算秒", "最終タイム", "総合順位", "クラス順位", "トップ比", "クラス比", "ペナルティ内容", "備考"])
                     for idx, r in enumerate(self.results_log):
                         time_display = "MC" if r.get("is_mc") else r["time_str"]
                         best_mark = "★" if r.get("is_best") else ""
-                        writer.writerow([idx + 1, best_mark, r["class"], r["bib"], r["name"], r["base_time"], r["penalty"], time_display, r["overall_rank"], r["class_rank"], r["top_ratio"], r["class_ratio"], r["note"]])
+                        writer.writerow([idx + 1, best_mark, r["class"], r["bib"], r["name"], r["base_time"], r["penalty"], time_display, r["overall_rank"], r["class_rank"], r["top_ratio"], r["class_ratio"], r["penalty_text"], r["memo_text"]])
                 self.log_message(f"💾 リザルト出力完了: {e.path}", ft.Colors.GREEN)
             except Exception as ex: self.log_message(f"❌ 出力エラー: {ex}", ft.Colors.RED)
 
