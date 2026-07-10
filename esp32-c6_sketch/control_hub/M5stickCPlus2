@@ -1,0 +1,72 @@
+/*
+ * ====================================================================
+ * MGTS - Control Hub (ESP-NOW to Serial Passthrough)
+ * ESP-NOWで受信したJSONデータを、PCアプリ用プレフィックスを付けて横流しする
+ * ====================================================================
+ */
+#include <M5StickCPlus2.h>
+#include <WiFi.h>
+#include <esp_now.h>
+
+// --- ESP-NOW 受信コールバック ---
+void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len) {
+  // 受信したデータを文字列(JSON)として安全に変換
+  char msg[len + 1];
+  memcpy(msg, incomingData, len);
+  msg[len] = '\0';
+
+  // 1. PC (Pythonアプリ) にシリアル経由で横流し
+  // Pythonが識別できるように頭に "[ESP_DATA] " を付ける
+  Serial.print("[ESP_DATA] ");
+  Serial.println(msg);
+
+  // 2. M5StickC PLUS2 の画面にも受信データを表示（動作確認用）
+  StickCP2.Display.fillScreen(BLACK);
+  StickCP2.Display.setCursor(0, 0);
+  StickCP2.Display.setTextColor(ORANGE);
+  StickCP2.Display.println("--- MGTS HUB ---");
+  StickCP2.Display.setTextColor(WHITE);
+  StickCP2.Display.println("NFC Data Received:");
+  StickCP2.Display.setTextColor(GREEN);
+  StickCP2.Display.println(msg);
+}
+
+void setup() {
+  // M5StickC PLUS2 の初期化
+  StickCP2.begin();
+  StickCP2.Display.setRotation(1); // 横向き
+  StickCP2.Display.setTextSize(2);
+  StickCP2.Display.fillScreen(BLACK);
+  StickCP2.Display.setCursor(0, 0);
+  StickCP2.Display.setTextColor(ORANGE);
+  StickCP2.Display.println("--- MGTS HUB ---");
+  StickCP2.Display.setTextColor(WHITE);
+  StickCP2.Display.println("Starting...");
+
+  // PCとのシリアル通信 (Python側のボーレートに合わせる)
+  Serial.begin(115200);
+
+  // WiFi & ESP-NOW 初期化
+  WiFi.mode(WIFI_STA);
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("ESP-NOW Init Failed");
+    StickCP2.Display.setTextColor(RED);
+    StickCP2.Display.println("ESP-NOW Error!");
+    return;
+  }
+
+  // コールバックの登録 (受信待機)
+  esp_now_register_recv_cb(OnDataRecv);
+
+  StickCP2.Display.fillScreen(BLACK);
+  StickCP2.Display.setCursor(0, 0);
+  StickCP2.Display.setTextColor(ORANGE);
+  StickCP2.Display.println("--- MGTS HUB ---");
+  StickCP2.Display.setTextColor(CYAN);
+  StickCP2.Display.println("Ready to Transfer");
+}
+
+void loop() {
+  // ハブは「受信」と「横流し」に専念するため、ループ内は待機のみ
+  delay(100);
+}
