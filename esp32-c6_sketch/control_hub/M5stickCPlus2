@@ -1,72 +1,129 @@
 /*
  * ====================================================================
- * MGTS - Control Hub (ESP-NOW to Serial Passthrough)
- * ESP-NOWで受信したJSONデータを、PCアプリ用プレフィックスを付けて横流しする
+ * MGTS - Control Hub (M5StickC PLUS2 Edition)
+ * 1. ESP-NOWでNFC/メイン基板からのJSONを受信し、USBシリアルへ転送
+ * 2. PCアプリからのデータをESP-NOWでメイン基板へ発射
+ * 3. 本体M5ボタン(BtnA)長押しで強制リセット(FORCE_DNF)を送信
  * ====================================================================
  */
 #include <M5StickCPlus2.h>
 #include <WiFi.h>
 #include <esp_now.h>
+#include <esp_wifi.h>
 
-// --- ESP-NOW 受信コールバック ---
-void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len) {
-  // 受信したデータを文字列(JSON)として安全に変換
-  char msg[len + 1];
-  memcpy(msg, incomingData, len);
-  msg[len] = '\0';
+// --- 送信先 ESP-NOW MACアドレス ---
+// ★メイン基板のMACアドレスに書き換えてください
+uint8_t mainBoardMac[]   = { 0x58, 0xE6, 0xC5, 0x12, 0x9A, 0x80 };
 
-  // 1. PC (Pythonアプリ) にシリアル経由で横流し
-  // Pythonが識別できるように頭に "[ESP_DATA] " を付ける
-  Serial.print("[ESP_DATA] ");
-  Serial.println(msg);
+// ====================================================================
+// ESP-NOW 送信処理 (PCからのデータや、ボタン操作時のコマンドを一斉送信)
+// ====================================================================
+void sendCommand(String cmd) {
+  esp_now_send(mainBoardMac, (uint8_t *)cmd.c_str(), cmd.length());
+  
+  // デバッグ用：PC側のシリアルモニタにも何を送信したか表示
+  Serial.println("[HUB_TX] " + cmd);
 
-  // 2. M5StickC PLUS2 の画面にも受信データを表示（動作確認用）
-  StickCP2.Display.fillScreen(BLACK);
-  StickCP2.Display.setCursor(0, 0);
-  StickCP2.Display.setTextColor(ORANGE);
-  StickCP2.Display.println("--- MGTS HUB ---");
+  // M5画面更新 (TX)
+  StickCP2.Display.fillRect(0, 80, StickCP2.Display.width(), 40, BLACK);
+  StickCP2.Display.setCursor(0, 80);
+  StickCP2.Display.setTextColor(CYAN);
+  StickCP2.Display.print("TX: ");
   StickCP2.Display.setTextColor(WHITE);
-  StickCP2.Display.println("NFC Data Received:");
+  StickCP2.Display.println(cmd);
+}
+
+// ====================================================================
+// ESP-NOW 受信コールバック (各基板からのデータをPCへシリアル転送)
+// ====================================================================
+void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  char msg[len + 1]; 
+  memcpy(msg, data, len); 
+  msg[len] = '\0';
+  
+  // ★重要：PCアプリが確実に1行で認識できるように文字列を結合してから送信
+  Serial.println("[ESP_DATA] " + String(msg)); 
+
+  // M5画面更新 (RX)
+  StickCP2.Display.fillRect(0, 30, StickCP2.Display.width(), 40, BLACK);
+  StickCP2.Display.setCursor(0, 30);
   StickCP2.Display.setTextColor(GREEN);
+  StickCP2.Display.print("RX: ");
+  StickCP2.Display.setTextColor(WHITE);
   StickCP2.Display.println(msg);
 }
 
+// ====================================================================
+// 初期設定 (Setup)
+// ====================================================================
 void setup() {
-  // M5StickC PLUS2 の初期化
   StickCP2.begin();
-  StickCP2.Display.setRotation(1); // 横向き
+  StickCP2.Display.setRotation(1); // 画面を横向きに
   StickCP2.Display.setTextSize(2);
   StickCP2.Display.fillScreen(BLACK);
   StickCP2.Display.setCursor(0, 0);
   StickCP2.Display.setTextColor(ORANGE);
-  StickCP2.Display.println("--- MGTS HUB ---");
-  StickCP2.Display.setTextColor(WHITE);
-  StickCP2.Display.println("Starting...");
+  StickCP2.Display.println("MGTS HUB");
 
-  // PCとのシリアル通信 (Python側のボーレートに合わせる)
   Serial.begin(115200);
-
-  // WiFi & ESP-NOW 初期化
+  
+  // ESP-NOW 初期化
   WiFi.mode(WIFI_STA);
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("ESP-NOW Init Failed");
-    StickCP2.Display.setTextColor(RED);
-    StickCP2.Display.println("ESP-NOW Error!");
-    return;
+  // ★旧コードに合わせ、チャンネルを明示的に1に固定（通信の安定化）
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE); 
+  WiFi.disconnect();
+  
+  if (esp_now_init() == ESP_OK) {
+    esp_now_register_recv_cb(OnDataRecv);
+
+    esp_now_peer_info_t peerInfo = {};
+    peerInfo.channel = 1;
+    peerInfo.encrypt = false;
+
+    // メインボードをピア登録
+    memcpy(peerInfo.peer_addr, mainBoardMac, 6);
+    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+      Serial.println("[ERROR] Failed to add Main Board peer");
+    }
+  } else {
+    Serial.println("[ERROR] ESP-NOW Init Failed");
   }
 
-  // コールバックの登録 (受信待機)
-  esp_now_register_recv_cb(OnDataRecv);
-
-  StickCP2.Display.fillScreen(BLACK);
-  StickCP2.Display.setCursor(0, 0);
-  StickCP2.Display.setTextColor(ORANGE);
-  StickCP2.Display.println("--- MGTS HUB ---");
-  StickCP2.Display.setTextColor(CYAN);
-  StickCP2.Display.println("Ready to Transfer");
+  Serial.println("[HUB_READY] Wireless Control Hub Active");
 }
 
+// ====================================================================
+// メインループ (Loop)
+// ====================================================================
 void loop() {
-  // ハブは「受信」と「横流し」に専念するため、ループ内は待機のみ
-  delay(100);
+  StickCP2.update(); // M5StickCのボタン状態を更新
+
+  // --------------------------------------------------
+  // 1. M5ボタン(BtnA)操作の監視（SEQ_STARTを廃止し、強制リセットのみ）
+  // --------------------------------------------------
+  // 誤操作防止：2秒（2000ms）以上の長押しで強制リセット
+  if (StickCP2.BtnA.pressedFor(2000)) {
+    Serial.println("[HUB] System Reset Triggered (2sec hold)");
+    sendCommand("FORCE_DNF");
+    sendCommand("STOP");
+    
+    // 長押し中に何度も送信されないように待機
+    while(StickCP2.BtnA.isPressed()) {
+      StickCP2.update();
+      delay(10);
+    }
+  }
+
+  // --------------------------------------------------
+  // 2. PC(総合アプリ)からのデータを受信してESP-NOWで中継
+  // --------------------------------------------------
+  if (Serial.available() > 0) {
+    String pcData = Serial.readStringUntil('\n');
+    pcData.trim(); // ゴミとなる改行コードや空白を除去
+    
+    // データが空でなければ、そのままメイン基板へ転送
+    if (pcData.length() > 0) {
+      sendCommand(pcData);
+    }
+  }
 }
