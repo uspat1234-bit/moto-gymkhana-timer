@@ -1,10 +1,6 @@
 /*
  * ====================================================================
  * MGTS - C6 Wireless Bridge (for Elecrow Main Board)
- * 1. 物理ボタン制御なし（Elecrow本体からのコマンドに依存）
- * 2. ESP-NOWで受信したデータを、Serial0(UART)経由でElecrow本体へ転送
- * 3. Elecrow本体からSerial0経由で受け取ったコマンドをESP-NOWで発射
- * 4. 送信結果(ACK)を取得し、Elecrow本体に通信状況を通知する機能を追加
  * ====================================================================
  */
 
@@ -14,13 +10,12 @@
 
 // --- 送信先 ESP-NOW MACアドレス ---
 // ※ここをタイマー実機（またはハブ）の実際のMACアドレスに変更してください。
-// ブロードキャスト(FF:FF...)のままだと送信結果の受領確認(ACK)が返ってきません。
 uint8_t targetAddress[] = {0x58, 0xE6, 0xC5, 0x12, 0x9A, 0xXX}; 
 
 // ====================================================================
-// ESP-NOW 送信結果コールバック (相手に届いたかを判定)
+// 【修正済み】ESP-NOW 送信結果コールバック (ESP32 v3.x対応版)
 // ====================================================================
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+void OnDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
   // 相手から受領確認(ACK)が返ってきたらOK、無応答ならNG
   if (status == ESP_NOW_SEND_SUCCESS) {
     Serial0.println("[SYS] CONN_OK");
@@ -37,7 +32,7 @@ void sendCommand(String cmd) {
 }
 
 // ====================================================================
-// ESP-NOW 受信コールバック (各基板からのデータをElecrow本体へシリアル転送)
+// ESP-NOW 受信コールバック
 // ====================================================================
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   char msg[len + 1]; 
@@ -61,7 +56,7 @@ void setup() {
     // 受信コールバックの登録
     esp_now_register_recv_cb(OnDataRecv);
     
-    // ★追加：送信結果コールバックの登録
+    // 送信結果コールバックの登録
     esp_now_register_send_cb(OnDataSent);
 
     // ピア(宛先)の登録
