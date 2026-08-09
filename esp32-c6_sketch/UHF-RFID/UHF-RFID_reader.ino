@@ -12,8 +12,8 @@
 Unit_UHF_RFID uhf;
 
 // AtomS3 LiteのGroveポート (4P): G2=RX, G1=TX
-#define UHF_RX_PIN 2
-#define UHF_TX_PIN 1
+#define UHF_RX_PIN 1
+#define UHF_TX_PIN 2
 
 // --- ESP-NOW 送信先MACアドレス ---
 uint8_t hubMac[] = { 0x00, 0x4B, 0x12, 0xC4, 0x5D, 0x70 };
