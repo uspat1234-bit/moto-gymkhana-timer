@@ -249,8 +249,11 @@ float getPreviousBestTime(const String &tagId, const String &bib, int excludeInd
         ResultRecord &r = masterLogs[i];
         if (r.isMC) continue;
         bool sameRider = false;
-        if (tagId != "X999" && r.tagId == tagId) sameRider = true;
-        if (tagId == "X999" && r.bib == bib) sameRider = true;
+        if (tagId != "X999") {
+            sameRider = (r.tagId == tagId);
+        } else {
+            sameRider = (r.tagId == "X999");   // X999同士は常に同一人物とみなす
+        }
         if (sameRider) {
             if (best < 0 || r.finalTime < best) best = r.finalTime;
         }
@@ -333,9 +336,13 @@ void rebuildResultTab() {
         ResultRecord &r = masterLogs[i];
         if (r.isMC) continue;
 
-        auto it = bestIndexByBib.find(r.bib);
+        // ★変更: X999由来の記録は、bib(X999-1, X999-2...)に関わらず、
+        //         全員まとめて "X999" という1つの共通キーで集計する
+        String bestKey = (r.tagId == "X999") ? "X999" : r.bib;
+
+        auto it = bestIndexByBib.find(bestKey);
         if (it == bestIndexByBib.end()) {
-            bestIndexByBib[r.bib] = i;
+            bestIndexByBib[bestKey] = i;
         } else {
             if (r.finalTime < masterLogs[it->second].finalTime) {
                 it->second = i;
