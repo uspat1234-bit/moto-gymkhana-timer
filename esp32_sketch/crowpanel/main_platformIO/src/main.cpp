@@ -28,6 +28,7 @@
 LGFX gfx;
 RTC_PCF8563 rtc;
 unsigned long lastTimeUpdate = 0;
+
 // RTCから起動時に1回だけ取得した基準時刻 (GT911初期化後はRTCへの再アクセスを避けるため)
 DateTime bootDateTime;
 unsigned long bootMillis = 0;
@@ -52,6 +53,9 @@ LV_FONT_DECLARE(font_jp_14);
 unsigned long lastC6DataMillis = 0;
 bool c6Connected = false;
 unsigned long lastC6StatusCheck = 0;
+
+// MC自動判定用の下限タイム(秒)。0以下の場合は自動判定を行わない
+float mcThresholdSeconds = 0.0f;
 
 lv_obj_t * current_editing_row = NULL;
 
@@ -102,9 +106,10 @@ std::vector<ResultRecord> masterLogs;
 
 std::map<String, String> pendingNotes;
 std::map<String, int> bestIndexByBib;
+std::map<String, int> bibBestIndex;   // bib単位でのベスト記録（pb_日付.csv保存専用。ランキング集約とは独立）
 
 std::vector<String> classList;
-String masterTargetClass = "A";
+String masterTargetClass = "X";
 String resultFilterClass = "ALL";
 
 int unknownCounter = 0;
@@ -113,20 +118,6 @@ void rebuildResultTab();
 void registerClass(String className);
 void updateClassDropdown();
 void savePersonalBestToSD();
-
-// ==========================================
-// RTC読み取りヘルパー (I2Cバス競合による異常値をリトライで回避)
-// ==========================================
-DateTime getRtcNowSafe() {
-    DateTime now = rtc.now();
-    int retry = 0;
-    while (now.year() < 2020 && retry < 5) {
-        delay(20);
-        now = rtc.now();
-        retry++;
-    }
-    return now;
-}
 
 void set_backlight(uint8_t brightness) {
     if (brightness > 245) brightness = 245;
@@ -252,7 +243,7 @@ float getPreviousBestTime(const String &tagId, const String &bib, int excludeInd
         if (tagId != "X999") {
             sameRider = (r.tagId == tagId);
         } else {
-            sameRider = (r.tagId == "X999");   // X999同士は常に同一人物とみなす
+            sameRider = (r.tagId == "X999"); // X999同士は常に同一人物とみなす
         }
         if (sameRider) {
             if (best < 0 || r.finalTime < best) best = r.finalTime;
@@ -336,9 +327,10 @@ void rebuildResultTab() {
         ResultRecord &r = masterLogs[i];
         if (r.isMC) continue;
 
-        // ★変更: X999由来の記録は、bib(X999-1, X999-2...)に関わらず、
-        //         全員まとめて "X999" という1つの共通キーで集計する
-        String bestKey = (r.tagId == "X999") ? "X999" : r.bib;
+        // bib単位で集計する（以前はtagId=="X999"の場合だけ全員まとめていたが、
+        // 電源再投入後に復元された記録はtagIdが空文字になるため挙動が不整合になっていた。
+        // bibは常にユニーク(X1, X2, X3...)なので、bib基準に統一する）
+        String bestKey = r.bib;
 
         auto it = bestIndexByBib.find(bestKey);
         if (it == bestIndexByBib.end()) {
@@ -403,14 +395,14 @@ void rebuildResultTab() {
         lv_label_set_text(memo_label, buildPenMemoText(r).c_str());
 
         if (topTime <= 0) {
-            lv_label_set_text(top_label, "100.0%");
-            } else {
-                    float ratio = (r.finalTime / topTime) * 100.0f;
-                    int ratioX10 = (int)(ratio * 10.0f);   // 小数点1桁で切り捨て
-                    char buf[16];
-                    snprintf(buf, sizeof(buf), "%d.%d%%", ratioX10 / 10, ratioX10 % 10);
-                    lv_label_set_text(top_label, buf);
-                    }
+            lv_label_set_text(top_label, "100.000%");
+        } else {
+            float ratio = (r.finalTime / topTime) * 100.0f;
+            int ratioX1000 = (int)(ratio * 1000.0f);   // 3桁精度で切り捨て
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%d.%03d%%", ratioX1000 / 1000, ratioX1000 % 1000);
+            lv_label_set_text(top_label, buf);
+        }
     }
 }
 
@@ -432,7 +424,7 @@ void savePersonalBestToSD() {
         return;
     }
     f.println("bib,name,class,time");
-    for (auto &kv : bestIndexByBib) {
+    for (auto &kv : bibBestIndex) {   // ★ bib単位の管理に変更（身元不明選手が1枠に集約されないように）
         ResultRecord &best = masterLogs[kv.second];
         f.printf("%s,%s,%s,%.3f\n",
             best.bib.c_str(), best.name.c_str(), best.riderClass.c_str(), best.finalTime);
@@ -474,11 +466,28 @@ void loadPersonalBestFromSD() {
         masterLogs.push_back(rec);
         int idx = masterLogs.size() - 1;
         bestIndexByBib[rec.bib] = idx;
+        bibBestIndex[rec.bib] = idx;   // ★ bib単位の管理にも復元する
+
+        // bibが"X"+数字(例:"X12")の形式なら、unknownCounterを復元して番号の衝突を防ぐ
+        if (rec.bib.startsWith("X")) {
+            int num = rec.bib.substring(1).toInt();
+            if (num > unknownCounter) unknownCounter = num;
+        }
 
         registerClass(rec.riderClass);
     }
     f.close();
     Serial.printf("個人ベスト復元完了(%s): %d 名\n", filename.c_str(), bestIndexByBib.size());
+}
+
+// ==========================================
+// MC threshold (下限タイムによる自動MC判定)
+// ==========================================
+void setMcThreshold(int minutes, int seconds, int ms100, int ms10, int ms1) {
+    int milliseconds = ms100 * 100 + ms10 * 10 + ms1;
+    mcThresholdSeconds = minutes * 60.0f + seconds + milliseconds / 1000.0f;
+    Serial.printf("[MC閾値] 設定: %d分%02d秒.%03d (%.3f秒)\n",
+        minutes, seconds, milliseconds, mcThresholdSeconds);
 }
 
 void processResult(String tagId, float rawTime) {
@@ -487,7 +496,7 @@ void processResult(String tagId, float rawTime) {
 
     if (tagId == "X999") {
         unknownCounter++;
-        bib = "X999-" + String(unknownCounter);
+        bib = "X" + String(unknownCounter);   // 例: "X1", "X15" など、短く表記
         name = "";
         riderClass = masterTargetClass;
     } else if (rider == nullptr) {
@@ -509,8 +518,16 @@ void processResult(String tagId, float rawTime) {
     rec.riderClass = riderClass;
     rec.baseTime = rawTime;
     rec.penaltySeconds = 0;
-    rec.isMC = false;
-    rec.finalTime = rawTime;
+
+    // 下限タイムを下回っていたら、自動的にMC判定
+    if (mcThresholdSeconds > 0 && rawTime < mcThresholdSeconds) {
+        rec.isMC = true;
+        Serial.printf("[自動MC] タイム %.3f秒 < 閾値 %.3f秒 のため、MC判定\n", rawTime, mcThresholdSeconds);
+    } else {
+        rec.isMC = false;
+    }
+
+    rec.finalTime = rec.isMC ? INFINITY : rawTime;
     rec.recvMillis = millis();
     rec.rowObj = nullptr;
 
@@ -522,34 +539,46 @@ void processResult(String tagId, float rawTime) {
 
     masterLogs.push_back(rec);
     int newIndex = masterLogs.size() - 1;
+
+    // bib単位でのベスト記録を更新（保存用。ランキング集約(bestIndexByBib)とは独立して管理する）
+    {
+        auto bIt = bibBestIndex.find(bib);
+        if (bIt == bibBestIndex.end() || masterLogs[newIndex].finalTime < masterLogs[bIt->second].finalTime) {
+            bibBestIndex[bib] = newIndex;
+        }
+    }
+
     addMasterRowUI(newIndex);
 
     long total_ms = (long)round(rawTime * 1000.0);
     Serial0.printf("T:%ld\n", total_ms);
 
-    float prevBest = getPreviousBestTime(tagId, bib, newIndex);
-    bool isPersonalBest = (prevBest < 0 || rawTime < prevBest);
+    // MC判定された場合、ファステスト系の読み上げは行わない(除外ロジックにより自動的に対象外)
+    if (!rec.isMC) {
+        float prevBest = getPreviousBestTime(tagId, bib, newIndex);
+        bool isPersonalBest = (prevBest < 0 || rawTime < prevBest);
 
-    float overallTop = getOverallTopTime();
-    bool isOverallFastest = (fabs(rawTime - overallTop) < 0.0005f);
+        float overallTop = getOverallTopTime();
+        bool isOverallFastest = (fabs(rawTime - overallTop) < 0.0005f);
 
-    if (isOverallFastest) {
-        Serial0.println("W:overall_fastest");
-    } else {
-        float classTop = getClassTopTime(riderClass);
-        bool isClassFastest = (fabs(rawTime - classTop) < 0.0005f);
+        if (isOverallFastest) {
+            Serial0.println("W:overall_fastest");
+        } else {
+            float classTop = getClassTopTime(riderClass);
+            bool isClassFastest = (fabs(rawTime - classTop) < 0.0005f);
 
-        if (isClassFastest) {
-            Serial0.println("W:class_fastest");
-        }
-        if (isPersonalBest) {
-            Serial0.println("W:personal_best");
-        }
+            if (isClassFastest) {
+                Serial0.println("W:class_fastest");
+            }
+            if (isPersonalBest) {
+                Serial0.println("W:personal_best");
+            }
 
-        if (overallTop > 0) {
-            float ratio = (rawTime / overallTop) * 100.0f;
-            int ratioX10 = (int)(ratio * 10.0f);   // 直接1桁精度で切り捨て
-            Serial0.printf("P:%d\n", ratioX10);
+            if (overallTop > 0) {
+                float ratio = (rawTime / overallTop) * 100.0f;
+                int ratioX10 = (int)(ratio * 10.0f); // 直接1桁精度で切り捨て
+                Serial0.printf("P:%d\n", ratioX10);
+            }
         }
     }
 
@@ -599,17 +628,24 @@ void queueResultVoice(float total_seconds) {
     Serial0.printf("T:%ld\n", ms);
 }
 
+// ==========================================
+// RTC時刻設定 (予約ファイル + 再起動方式)
+// setup()の、早い段階(GT911初期化前)なら、確実に書き込めることが
+// 確認できたため、その場で書き込むのではなく、
+// 「次回起動時に書き込む」予約をSDに残し、即座に再起動する
+// ==========================================
 void setRtcTime(int year, int month, int day, int hour, int minute) {
-    DateTime newTime(year, month, day, hour, minute, 0);
-
-    rtc.adjust(newTime);
-    delay(50);
-
-    // ★重要: キャッシュしている起動時刻も、新しい時刻に更新する
-    bootDateTime = newTime;
-    bootMillis = millis();
-
-    Serial.printf("RTC設定完了: %04d/%02d/%02d %02d:%02d\n", year, month, day, hour, minute);
+    File f = SD.open("/pending_rtc.txt", FILE_WRITE);
+    if (f) {
+        f.printf("%d,%d,%d,%d,%d\n", year, month, day, hour, minute);
+        f.close();
+        Serial.printf("[RTC] 予約ファイル保存: %04d/%02d/%02d %02d:%02d → 再起動します\n",
+            year, month, day, hour, minute);
+    } else {
+        Serial.println("[RTC] 予約ファイルの書き込みに失敗しました");
+    }
+    delay(300);
+    ESP.restart();
 }
 
 void exportMasterListToCSV() {
@@ -665,6 +701,14 @@ void commitEditedResult(String new_no, String new_class, int pylon_touch, bool i
     r.penaltySeconds = pylon_touch;
     r.isMC = is_miss_course;
     r.finalTime = r.isMC ? INFINITY : (r.baseTime + (float)r.penaltySeconds);
+
+    // bib単位でのベスト記録を更新（bib自体が編集で変わった場合にも対応）
+    {
+        auto bIt = bibBestIndex.find(r.bib);
+        if (bIt == bibBestIndex.end() || r.finalTime < masterLogs[bIt->second].finalTime) {
+            bibBestIndex[r.bib] = index;
+        }
+    }
 
     refreshMasterRowUI(index);
     rebuildResultTab();
@@ -727,6 +771,7 @@ void setup() {
     Serial0.begin(115200, SERIAL_8N1, /*RX*/ 44, /*TX*/ 43);
 
     Wire.begin(15, 16);
+    Wire.setClock(50000);
     delay(50);
 
     Wire.beginTransmission(0x30);
@@ -744,22 +789,43 @@ void setup() {
 
     set_backlight(0);
 
- if (!rtc.begin(&Wire)) {
-    Serial.println("RTC Not Found");
-} else {
-    Serial.println("RTC Connected");
-    bootDateTime = rtc.now();      // ★ここで1回だけ確実に読む(GT911初期化前)
-    bootMillis = millis();
-    Serial.printf("[BOOT] 起動時刻キャッシュ: %04d/%02d/%02d %02d:%02d:%02d\n",
-        bootDateTime.year(), bootDateTime.month(), bootDateTime.day(),
-        bootDateTime.hour(), bootDateTime.minute(), bootDateTime.second());
-}
+    if (!rtc.begin(&Wire)) {
+        Serial.println("RTC Not Found");
+    } else {
+        Serial.println("RTC Connected");
+        bootDateTime = rtc.now(); // ここで1回だけ確実に読む(GT911初期化前)
+        bootMillis = millis();
+        Serial.printf("[BOOT] 起動時刻キャッシュ: %04d/%02d/%02d %02d:%02d:%02d\n",
+            bootDateTime.year(), bootDateTime.month(), bootDateTime.day(),
+            bootDateTime.hour(), bootDateTime.minute(), bootDateTime.second());
+    }
 
     SD_SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
     if (!SD.begin(SD_CS, SD_SPI, 80000000)) {
         Serial.println("エラー：SDカードが認識できません！(HSPI)");
     } else {
         Serial.println("SDカードマウント成功！");
+
+        // ★予約されたRTC設定があれば、この、まだ安全なタイミングで、反映する
+        if (SD.exists("/pending_rtc.txt")) {
+            File f = SD.open("/pending_rtc.txt", FILE_READ);
+            if (f) {
+                String line = f.readStringUntil('\n');
+                f.close();
+                int y, mo, d, h, mi;
+                if (sscanf(line.c_str(), "%d,%d,%d,%d,%d", &y, &mo, &d, &h, &mi) == 5) {
+                    DateTime newTime(y, mo, d, h, mi, 0);
+                    rtc.adjust(newTime);
+                    delay(100);
+                    bootDateTime = rtc.now();
+                    bootMillis = millis();
+                    Serial.printf("[RTC] 予約設定を反映しました: %04d/%02d/%02d %02d:%02d\n", y, mo, d, h, mi);
+                } else {
+                    Serial.println("[RTC] 予約ファイルの内容が不正でした");
+                }
+            }
+            SD.remove("/pending_rtc.txt");
+        }
     }
 
     gfx.init();
