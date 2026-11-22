@@ -41,6 +41,10 @@
 /* ====================================================================
  * サウンド設定 (ここを変えれば音の長さ・高さを調整できます)
  * ==================================================================== */
+/* SEQ_START 多重起動ロック時間 (メイン基板と必ず同じ値にする)
+ * 緑表示もこの時間で終了してREADYへ戻る */
+const unsigned long SEQ_LOCK_MS = 10000;
+
 const float    COUNT_TONE_HZ = 440;    // 赤・黄の音
 const uint16_t COUNT_TONE_MS = 150;
 const float    GREEN_TONE_HZ = 880;    // 緑(スタート)の音
@@ -162,8 +166,9 @@ void processCommand(String rawMsg) {
 
   if (msg == "SEQ_START") {
     // 多重起動ロック (連打ガード)
-    if (isSequenceActive) {
-      Serial.println("[SEQ] Ignore: Sequence already running.");
+    // メイン基板と同じ SEQ_LOCK_MS で揃える (フライングで早く終わった場合も含む)
+    if (isSequenceActive || (seqStartTime != 0 && millis() - seqStartTime < SEQ_LOCK_MS)) {
+      Serial.println("[SEQ] Ignore: Sequence locked.");
       return;
     }
 
@@ -263,7 +268,7 @@ void loop() {
       else if (elapsed >= 4000 && elapsed < 5000 && currentSignalState != STATE_YELLOW) { currentSignalState = STATE_YELLOW; pendingSound = SND_COUNT; }
       else if (elapsed >= 5000 && currentSignalState != STATE_GREEN) { currentSignalState = STATE_GREEN; pendingSound = SND_GO; }
 
-      if (currentSignalState == STATE_GREEN && elapsed > 15000) {
+      if (currentSignalState == STATE_GREEN && elapsed > SEQ_LOCK_MS) {
         isSequenceActive = false; currentSignalState = STATE_READY;
       }
     } else {
