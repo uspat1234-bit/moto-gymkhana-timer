@@ -10,6 +10,7 @@ import serial
 import re
 import csv
 import os
+import math
 from serial.tools import list_ports
 import pyttsx3
 
@@ -38,7 +39,9 @@ class MotoGymkhanaApp:
         self.active_runners = []    
         self.runner_notes = {}      
         self.results_log = []       
-        self.is_nfc_locked = False  
+        self.pending_entry = None    # タグ読取済み・未出走の次走者
+        self.delete_armed = False    # 削除ボタンの二度押し確認用
+        self.restore_armed = False   # 復元ボタンの二度押し確認用
         
         self.file_picker = ft.FilePicker(on_result=self.on_csv_selected)
         self.save_file_picker = ft.FilePicker(on_result=self.on_save_csv_result)
@@ -60,6 +63,7 @@ class MotoGymkhanaApp:
         
         self.result_tabs = ft.Tabs(selected_index=0, animation_duration=300, tabs=[], expand=True)
         
+        self.btn_restore = ft.OutlinedButton("バックアップから復元", icon=ft.Icons.RESTORE, on_click=self.restore_backup)
         self.btn_export_csv = ft.ElevatedButton("リザルトをCSV保存", icon=ft.Icons.DOWNLOAD, on_click=lambda _: self.save_file_picker.save_file(allowed_extensions=["csv"], file_name="mgts_results.csv"), color=ft.Colors.WHITE, bgcolor=ft.Colors.BLUE_700)
         self.btn_import_csv = ft.ElevatedButton("名簿CSVを一括読込", icon=ft.Icons.UPLOAD_FILE, on_click=lambda _: self.file_picker.pick_files(allowed_extensions=["csv"], allow_multiple=False), color=ft.Colors.WHITE, bgcolor=ft.Colors.GREEN_700)
         self.rider_table = ft.DataTable(columns=[ft.DataColumn(label=ft.Text("タグID")), ft.DataColumn(label=ft.Text("ゼッケン")), ft.DataColumn(label=ft.Text("選手名")), ft.DataColumn(label=ft.Text("クラス"))], rows=[])
@@ -70,18 +74,8 @@ class MotoGymkhanaApp:
         
         self.current_edit_record = None
         self.penalty_dialog = ft.AlertDialog(
-            title=ft.Text("ペナルティ操作"),
-            content=ft.Column([
-                ft.ElevatedButton("+1秒 (パイロンタッチ)", on_click=lambda e: self.apply_penalty(1, "PT"), bgcolor=ft.Colors.ORANGE_800, color=ft.Colors.WHITE, width=250),
-                ft.ElevatedButton("+1秒 (足つき)", on_click=lambda e: self.apply_penalty(1, "足つき"), bgcolor=ft.Colors.ORANGE_800, color=ft.Colors.WHITE, width=250),
-                # ★追加：手動フライング加算ボタン
-                ft.ElevatedButton("+1秒 (フライング)", on_click=lambda e: self.apply_penalty(1, "フライング"), bgcolor=ft.Colors.RED_600, color=ft.Colors.WHITE, width=250),
-                ft.ElevatedButton("+3秒 (脱輪等)", on_click=lambda e: self.apply_penalty(3, "脱輪"), bgcolor=ft.Colors.RED_800, color=ft.Colors.WHITE, width=250),
-                ft.Divider(),
-                ft.ElevatedButton("MC (ミスコース) にする", on_click=lambda e: self.apply_penalty(999, "MC"), bgcolor=ft.Colors.PURPLE_800, color=ft.Colors.WHITE, width=250),
-                ft.Divider(),
-                ft.ElevatedButton("ペナルティ・MCをリセット", on_click=lambda e: self.apply_penalty(0, "RESET"), color=ft.Colors.RED_200, width=250),
-            ], tight=True),
+            title=ft.Text("リザルト編集"),
+            content=ft.Column([], tight=True),
             actions=[ft.TextButton("閉じる", on_click=lambda e: self.close_penalty_dialog())],
         )
         self.page.overlay.append(self.penalty_dialog)
@@ -95,7 +89,7 @@ class MotoGymkhanaApp:
                     ft.Column([ft.Text("出走中 ➡ スターティング", color=ft.Colors.GREY_400), self.active_runners_row], expand=5),
                 ]))),
                 ft.Divider(),
-                ft.Row([ft.Text("📊 リザルト一覧", size=20, weight=ft.FontWeight.BOLD), self.btn_export_csv], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.Row([ft.Text("📊 リザルト一覧", size=20, weight=ft.FontWeight.BOLD), ft.Row([self.btn_restore, self.btn_export_csv])], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 ft.Column([self.result_tabs], expand=True)
             ]))
 
@@ -124,11 +118,43 @@ class MotoGymkhanaApp:
         self.page.add(ft.Row(controls=[self.nav_rail, ft.VerticalDivider(width=1), ft.Stack(controls=self.views, expand=True)], expand=True))
 
     # ====================================================================
-    # 4. ペナルティ操作・MC・再計算ロジック
+    # 4. リザルト編集 (ペナルティ / MC / タイム修正 / 選手付け替え / 削除)
     # ====================================================================
     def open_penalty_dialog(self, record):
         self.current_edit_record = record
-        self.penalty_dialog.title.value = f"操作: No.{record['bib']} {record['name']}"
+        self.delete_armed = False
+        rec = record
+
+        def btn(label, cb, bg=None, fg=ft.Colors.WHITE):
+            return ft.ElevatedButton(label, on_click=cb, bgcolor=bg, color=fg, width=260)
+
+        self.edit_time_field = ft.TextField(label="ベースタイム(秒)", value=f"{rec['base_time']:.3f}", width=150, dense=True)
+        self.edit_rider_drop = ft.Dropdown(
+            label="選手", width=260, dense=True, value=rec.get("tag_id"),
+            options=[ft.dropdown.Option(key=tid, text=f"No.{i['bib']} {i['name']} ({i['class']})") for tid, i in self.rider_database.items()],
+        )
+        self.btn_delete = ft.TextButton("このリザルトを削除", icon=ft.Icons.DELETE, on_click=lambda e: self.delete_record(), style=ft.ButtonStyle(color=ft.Colors.RED_300))
+
+        status = rec.get("status", "OK")
+        self.penalty_dialog.title.value = f"編集: No.{rec['bib']} {rec['name']}" + (f"  [{status}]" if status != "OK" else "")
+        self.penalty_dialog.content = ft.Column([
+            ft.Text("ペナルティ", weight=ft.FontWeight.BOLD),
+            btn("+1秒 (パイロンタッチ)", lambda e: self.apply_penalty(1, "PT"), ft.Colors.ORANGE_800),
+            btn("+1秒 (足つき)", lambda e: self.apply_penalty(1, "足つき"), ft.Colors.ORANGE_800),
+            btn("+1秒 (フライング)", lambda e: self.apply_penalty(1, "フライング"), ft.Colors.RED_600),
+            btn("+3秒 (脱輪等)", lambda e: self.apply_penalty(3, "脱輪"), ft.Colors.RED_800),
+            btn("直前のペナルティを1つ取り消す", lambda e: self.apply_penalty(0, "UNDO"), ft.Colors.GREY_700),
+            btn("MC (ミスコース) にする", lambda e: self.apply_penalty(0, "MC"), ft.Colors.PURPLE_800),
+            btn("ペナルティ・MCを全てリセット", lambda e: self.apply_penalty(0, "RESET"), None, ft.Colors.RED_200),
+            ft.Divider(),
+            ft.Text("タイム修正 (DNF/DNSも実タイムに変更できます)", weight=ft.FontWeight.BOLD),
+            ft.Row([self.edit_time_field, ft.ElevatedButton("確定", on_click=lambda e: self.apply_time_edit())]),
+            ft.Divider(),
+            ft.Text("選手の付け替え", weight=ft.FontWeight.BOLD),
+            ft.Row([self.edit_rider_drop, ft.ElevatedButton("変更", on_click=lambda e: self.apply_rider_change())], wrap=True),
+            ft.Divider(),
+            self.btn_delete,
+        ], tight=True, scroll=ft.ScrollMode.AUTO, height=560)
         self.penalty_dialog.open = True
         self.page.update()
 
@@ -136,36 +162,123 @@ class MotoGymkhanaApp:
         self.penalty_dialog.open = False
         self.page.update()
 
-    def apply_penalty(self, seconds, note_text):
-        if not self.current_edit_record: return
-        rec = self.current_edit_record
-        
-        # ★修正：memo_text（備考）には一切触れず、penalty_text のみを書き換える
-        if note_text == "RESET":
-            rec["penalty"] = 0
-            rec["is_mc"] = False
-            rec["penalty_text"] = ""
-        elif note_text == "MC":
+    def refresh_record(self, rec):
+        """ペナルティ内訳・MC・DNF/DNS から表示用の値を作り直す"""
+        items = rec.setdefault("penalty_items", [])
+        rec["penalty"] = sum(sec for sec, _ in items)
+        labels = " ".join(f"[{name}]" for _, name in items)
+        status = rec.get("status", "OK")
+        if status != "OK":
+            rec["is_mc"] = True                       # 順位・タイム比から除外
+            rec["time_float"] = float('inf')
+            rec["time_str"] = status
+            rec["penalty_text"] = f"{status} {labels}".strip()
+        elif rec.get("is_mc_manual"):
             rec["is_mc"] = True
-            rec["penalty_text"] = "MC"
-        else:
-            rec["penalty"] += seconds
-            if rec["penalty_text"] == "MC":
-                rec["penalty_text"] = "" # MCから通常のペナルティ加算に復帰した場合
-            rec["is_mc"] = False
-            rec["penalty_text"] = f"{rec['penalty_text']} [{note_text}]".strip()
-            
-        if rec["is_mc"]:
             rec["time_float"] = float('inf')
             rec["time_str"] = "MC"
-            self.log_message(f"⚠️ 修正: No.{rec['bib']} {rec['name']} -> ミスコース(MC)", ft.Colors.PURPLE_300)
+            rec["penalty_text"] = f"MC {labels}".strip()
         else:
+            rec["is_mc"] = False
             rec["time_float"] = round(rec["base_time"] + rec["penalty"], 3)
             rec["time_str"] = f"{rec['time_float']:.3f}"
-            self.log_message(f"⚠️ 修正: No.{rec['bib']} {rec['name']} -> {note_text} (トータル: {rec['time_str']}s)", ft.Colors.RED_400)
-            
-        self.close_penalty_dialog()
+            rec["penalty_text"] = labels
+
+    def _after_edit(self, msg, color=ft.Colors.RED_400, close=True):
+        self.log_message(msg, color)
+        if close: self.close_penalty_dialog()
         self.recalculate_results()
+        self.update_result_table()
+        self.save_backup()
+
+    def apply_penalty(self, seconds, note_text):
+        rec = self.current_edit_record
+        if not rec: return
+        items = rec.setdefault("penalty_items", [])
+        if note_text == "RESET":
+            items.clear(); rec["is_mc_manual"] = False
+        elif note_text == "MC":
+            rec["is_mc_manual"] = True
+        elif note_text == "UNDO":
+            if rec.get("is_mc_manual"): rec["is_mc_manual"] = False
+            elif items: items.pop()
+            else: return
+        else:
+            items.append([seconds, note_text])
+        self.refresh_record(rec)
+        self._after_edit(f"✏️ 修正: No.{rec['bib']} {rec['name']} -> {note_text} (表示: {rec['time_str']} {rec['penalty_text']})")
+
+    def apply_time_edit(self):
+        rec = self.current_edit_record
+        if not rec: return
+        try:
+            v = round(float(self.edit_time_field.value.strip()), 3)
+            if not (0 < v < 3600): raise ValueError
+        except Exception:
+            self.edit_time_field.error_text = "0〜3600の数値で入力"
+            self.page.update()
+            return
+        old = rec["time_str"]
+        rec["base_time"] = v
+        rec["status"] = "OK"
+        self.refresh_record(rec)
+        self._after_edit(f"✏️ タイム修正: No.{rec['bib']} {rec['name']} {old} -> {rec['time_str']}")
+
+    def apply_rider_change(self):
+        rec = self.current_edit_record
+        tid = self.edit_rider_drop.value
+        if not rec or not tid or tid not in self.rider_database: return
+        old = f"No.{rec['bib']} {rec['name']}"
+        info = self.rider_database[tid]
+        rec.update({"tag_id": tid, "bib": info["bib"], "name": info["name"], "class": info["class"]})
+        self._after_edit(f"✏️ 選手付け替え: {old} -> No.{rec['bib']} {rec['name']} ({rec['time_str']})")
+
+    def delete_record(self):
+        rec = self.current_edit_record
+        if not rec: return
+        if not self.delete_armed:                     # 1回目: 確認表示
+            self.delete_armed = True
+            self.btn_delete.text = "本当に削除する (もう一度押す)"
+            self.page.update()
+            return
+        if rec in self.results_log: self.results_log.remove(rec)
+        self.current_edit_record = None
+        self._after_edit(f"🗑️ 削除: No.{rec['bib']} {rec['name']} ({rec['time_str']})", ft.Colors.GREY_400)
+
+    # ---- 自動バックアップ / 復元 ----
+    BACKUP_JSON = "mgts_results_backup.json"
+    BACKUP_CSV = "mgts_results_auto.csv"
+
+    def save_backup(self):
+        try:
+            with open(self.BACKUP_JSON, "w", encoding="utf-8") as f:
+                json.dump(self.results_log, f, ensure_ascii=False)   # inf は Infinity として保存される
+            self.write_results_csv(self.BACKUP_CSV)
+        except Exception as ex:
+            self.log_message(f"❌ 自動バックアップ失敗: {ex}", ft.Colors.RED)
+
+    def restore_backup(self, e=None):
+        if not os.path.exists(self.BACKUP_JSON):
+            self.log_message("⚠️ バックアップがありません", ft.Colors.YELLOW); return
+        if self.results_log and not self.restore_armed:
+            self.restore_armed = True
+            self.btn_restore.text = "現在の結果を上書きして復元 (もう一度押す)"
+            self.page.update(); return
+        self.restore_armed = False
+        self.btn_restore.text = "バックアップから復元"
+        try:
+            with open(self.BACKUP_JSON, encoding="utf-8") as f:
+                data = json.load(f)
+            for r in data:
+                r.setdefault("status", "OK"); r.setdefault("penalty_items", [])
+                r.setdefault("tag_id", None); r.setdefault("is_mc_manual", False)
+                self.refresh_record(r)
+            self.results_log = data
+            self.recalculate_results()
+            self.update_result_table()
+            self.log_message(f"♻️ バックアップから {len(data)} 件を復元しました", ft.Colors.GREEN)
+        except Exception as ex:
+            self.log_message(f"❌ 復元エラー: {ex}", ft.Colors.RED)
 
     def recalculate_results(self):
         if not self.results_log: return
@@ -220,6 +333,69 @@ class MotoGymkhanaApp:
         self.update_result_table()
 
     # ====================================================================
+    # エントリー・出走状態の管理 (ATOMS3 RFID / PC NFC 共通)
+    #   pending_entry : タグを読んだがまだ出走していない「次走者」
+    #   active_runners: 次走者 + コース上の選手 (古い順)
+    #   次走者は SEQ_START(シグナル使用時) か STARTED(メイン基板の出走通知) で確定する。
+    #   確定前に別のタグを読んだ場合は差し替え (基板側の次走者IDも上書きされるため)
+    # ====================================================================
+    def register_entry(self, tag_id, via):
+        if not tag_id: return
+        tag_id = str(tag_id).strip().upper()
+        if tag_id == self.pending_entry: return          # 同じタグの読み直し
+        if tag_id in self.active_runners: return         # コース上の選手のタグを拾った
+
+        rider = self.rider_database.get(tag_id)
+        label = f"No.{rider['bib']} {rider['name']} (ID:{tag_id})" if rider else f"ID:{tag_id}"
+
+        if via == "NFC":
+            # PC側NFCはハブ経由で全基板へ送る (ATOMS3のRFIDはハブが自分で送信済み)
+            packet = f"{json.dumps({'type':'ENTRY', 'id':tag_id})}\n".encode()
+            if self.ser and self.ser.is_open: self.ser.write(packet)
+        if not rider:
+            self.log_message(f"⚠️ 未登録タグ: {tag_id} (CSVに登録されていません。計測は継続)", ft.Colors.YELLOW)
+
+        if self.pending_entry and self.pending_entry in self.active_runners:
+            old = self.pending_entry
+            self.active_runners[self.active_runners.index(old)] = tag_id
+            old_info = self.rider_database.get(old, {"bib": "?", "name": old})
+            self.log_message(f"🔁 次走者を差し替え: No.{old_info['bib']} {old_info['name']} → {label}", ft.Colors.ORANGE_200)
+        else:
+            self.active_runners.append(tag_id)
+            self.log_message(f"📖 エントリー受付({via}): {label}", ft.Colors.GREEN_200)
+        self.pending_entry = tag_id
+        self.update_dashboard_counts()
+
+    def on_seq_start(self):
+        # シグナル開始: 次走者はこのシーケンスに確定 (基板側でIDが消費される)
+        name = ""
+        if self.pending_entry:
+            info = self.rider_database.get(self.pending_entry, {"bib": "?", "name": self.pending_entry})
+            name = f": No.{info['bib']} {info['name']}"
+        self.pending_entry = None
+        self.log_message(f"🚦 シグナル開始{name}", ft.Colors.GREEN_400)
+        self.update_dashboard_counts()
+
+    def on_started(self, rider_id):
+        # メイン基板からの出走通知 (MULT/SOLO: スタート通過 / SYNC: 出走確認)
+        rider_id = rider_id or "X999"
+        if rider_id == self.pending_entry:
+            self.pending_entry = None
+        elif rider_id not in self.active_runners:
+            self.active_runners.append(rider_id)   # エントリー無し(X999)や取りこぼし
+        info = self.rider_database.get(rider_id, {"bib": "?", "name": "不明"})
+        self.log_message(f"🏍️ 出走: No.{info['bib']} {info['name']} (ID:{rider_id})", ft.Colors.CYAN_100)
+        self.update_dashboard_counts()
+
+    def on_force_dnf(self):
+        # 実際に外れる選手はメイン基板から届く DNF リザルトで確定させる
+        self.log_message("🛑 リセット指示 (先頭選手のDNFを待ちます)", ft.Colors.ORANGE_400)
+
+    def _remove_finished(self, rider_id):
+        if rider_id in self.active_runners: self.active_runners.remove(rider_id)
+        if rider_id == self.pending_entry: self.pending_entry = None
+
+    # ====================================================================
     # 5. コアロジック（パケット解析・状態遷移）
     # ====================================================================
     def process_incoming_packet(self, json_str, source):
@@ -228,18 +404,22 @@ class MotoGymkhanaApp:
             msg_type = data.get("type")
             raw_id = data.get("id")
             
-            rider_id = raw_id if raw_id and raw_id != "X999" else (self.active_runners[0] if self.active_runners else "X999")
+            rider_id = raw_id or "X999"
             info = self.rider_database.get(rider_id, {"bib": "?", "name": "不明", "class": "-"})
             rider_name = f"No.{info['bib']} {info['name']}"
             current_time = time.time()
             
-            if msg_type in ["SEQ_START", "FORCE_DNF"]:
-                self.is_nfc_locked = False
-                if msg_type == "SEQ_START": self.log_message(f"🚦 シグナル開始 (NFCロック解除)", ft.Colors.GREEN_400)
-                else:
-                    self.active_runners.clear()
-                    self.update_dashboard_counts()
-                    self.log_message(f"🛑 コースリセット (NFCロック解除 / 待機列クリア)", ft.Colors.ORANGE_400)
+            if msg_type == "ENTRY":
+                self.register_entry(raw_id, "RFID")
+                return
+            if msg_type == "STARTED":
+                self.on_started(raw_id)
+                return
+
+            if msg_type == "SEQ_START":
+                self.on_seq_start()
+            elif msg_type == "FORCE_DNF":
+                self.on_force_dnf()
             
             elif msg_type == "REACTION":
                 diff = data.get("diff", 0.0)
@@ -255,11 +435,13 @@ class MotoGymkhanaApp:
                 
             elif msg_type == "RESULT":
                 run_time = round(float(data.get("time", 999.999)), 3)
+                status = data.get("status", "OK")          # OK / DNF / DNS (メイン基板が付与)
                 time_str = f"{run_time:.3f}"
                 r_class = info.get("class", "-")
                 
+                # 重複パケット除去 (未登録選手 "?" は別人の可能性があるので除去しない)
                 for res in self.results_log:
-                    if res["bib"] == info["bib"] and res["base_time"] == run_time:
+                    if info["bib"] != "?" and res["bib"] == info["bib"] and res["base_time"] == run_time:
                         if current_time - res.get("recv_time", 0) < 3.0: return
                 
                 # ★修正：センサー由来の通知（React/FLYING等）は memo_text に格納する
@@ -271,10 +453,26 @@ class MotoGymkhanaApp:
                     "time_float": run_time, "time_str": time_str,
                     "penalty_text": "", "memo_text": memo_str, # ★2つのテキスト欄に分離
                     "overall_rank": "-", "class_rank": "-", "top_ratio": "-", "class_ratio": "-",
-                    "is_best": False, "recv_time": current_time
+                    "is_best": False, "recv_time": current_time,
+                    "status": status, "tag_id": rider_id if rider_id in self.rider_database else None,
+                    "penalty_items": [], "is_mc_manual": False,
                 }
+                self.refresh_record(new_record)
+                # DNF / DNS は refresh_record で順位・タイム比の計算から除外済み
+                if status != "OK":
+                    self.results_log.append(new_record)
+                    self.recalculate_results()
+                    self.save_backup()
+                    spoken = "未出走" if status == "DNS" else "ディーエヌエフ"
+                    threading.Thread(target=self._speak, args=(f"ゼッケン{info['bib']}番、{spoken}です。",), daemon=True).start()
+                    self.log_message(f"🏁 {status}: {rider_name}", ft.Colors.ORANGE_300)
+                    self._remove_finished(rider_id)
+                    self.update_dashboard_counts()
+                    return
+
                 self.results_log.append(new_record)
                 self.recalculate_results()
+                self.save_backup()
                 
                 sec = int(run_time)
                 ms = int(round((run_time - sec) * 1000))
@@ -283,17 +481,10 @@ class MotoGymkhanaApp:
                 
                 speech_text = f"ゼッケン{info['bib']}番。タイム、{sec}秒{ms}。総合タイム比、{top_ratio_str}パーセント。クラスタイム比、{class_ratio_str}パーセントです。"
 
-                def speak_async(text):
-                    try:
-                        engine = pyttsx3.init()
-                        engine.say(text)
-                        engine.runAndWait()
-                    except Exception as e: print(f"TTS Error: {e}")
-
-                threading.Thread(target=speak_async, args=(speech_text,), daemon=True).start()
+                threading.Thread(target=self._speak, args=(speech_text,), daemon=True).start()
                 self.log_message(f"🏁 ゴール: {rider_name} [{time_str}s] 総合比 {new_record['top_ratio']} / ｸﾗｽ比 {new_record['class_ratio']}", ft.Colors.CYAN_200)
                 
-                if rider_id in self.active_runners: self.active_runners.remove(rider_id)
+                self._remove_finished(rider_id)
                 self.update_dashboard_counts()
                 
         except Exception: pass
@@ -328,7 +519,7 @@ class MotoGymkhanaApp:
                 rank_str = str(r["overall_rank"]) if tab_name == "総合" else (str(r["class_rank"]) if tab_name != "全履歴" else "-")
                 
                 time_color = ft.Colors.PURPLE_400 if r.get("is_mc") else (ft.Colors.RED_400 if r["penalty"] > 0 else ft.Colors.WHITE)
-                time_display = "MC" if r.get("is_mc") else r["time_str"]
+                time_display = r["time_str"]   # MC / DNF / DNS / 数値
                 
                 # 自動検知されたFLYINGは備考欄で赤字に
                 memo_color = ft.Colors.RED_400 if "FLYING" in r["memo_text"] else ft.Colors.WHITE
@@ -349,17 +540,18 @@ class MotoGymkhanaApp:
         self.page.update()
 
     # --- 以下、省略不可の定型処理 ---
+    def write_results_csv(self, path):
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["出走順", "ベストフラグ", "クラス", "ゼッケン", "名前", "ベースタイム", "ペナルティ加算秒", "最終タイム", "総合順位", "クラス順位", "トップ比", "クラス比", "ペナルティ内容", "備考"])
+            for idx, r in enumerate(self.results_log):
+                best_mark = "★" if r.get("is_best") else ""
+                writer.writerow([idx + 1, best_mark, r["class"], r["bib"], r["name"], r["base_time"], r["penalty"], r["time_str"], r["overall_rank"], r["class_rank"], r["top_ratio"], r["class_ratio"], r["penalty_text"], r["memo_text"]])
+
     def on_save_csv_result(self, e: ft.FilePickerResultEvent):
         if e.path:
             try:
-                with open(e.path, "w", encoding="utf-8-sig", newline="") as f:
-                    writer = csv.writer(f)
-                    # ★CSVヘッダーも「ペナルティ内容」と「備考」に分離
-                    writer.writerow(["出走順", "ベストフラグ", "クラス", "ゼッケン", "名前", "ベースタイム", "ペナルティ加算秒", "最終タイム", "総合順位", "クラス順位", "トップ比", "クラス比", "ペナルティ内容", "備考"])
-                    for idx, r in enumerate(self.results_log):
-                        time_display = "MC" if r.get("is_mc") else r["time_str"]
-                        best_mark = "★" if r.get("is_best") else ""
-                        writer.writerow([idx + 1, best_mark, r["class"], r["bib"], r["name"], r["base_time"], r["penalty"], time_display, r["overall_rank"], r["class_rank"], r["top_ratio"], r["class_ratio"], r["penalty_text"], r["memo_text"]])
+                self.write_results_csv(e.path)
                 self.log_message(f"💾 リザルト出力完了: {e.path}", ft.Colors.GREEN)
             except Exception as ex: self.log_message(f"❌ 出力エラー: {ex}", ft.Colors.RED)
 
@@ -410,31 +602,15 @@ class MotoGymkhanaApp:
 
     def on_nfc_connect(self, tag):
         try:
-            if tag.ndef and tag.ndef.records and isinstance(tag.ndef.records[0], ndef.TextRecord): tag_id = tag.ndef.records[0].text
-            else: return True
-        except: return True
-
-        if self.is_nfc_locked:
-            self.log_message("🔒 ロック中: 前の選手がスタートするまでタッチ不可", ft.Colors.RED)
-            self.page.update()
+            if tag.ndef and tag.ndef.records and isinstance(tag.ndef.records[0], ndef.TextRecord):
+                tag_id = tag.ndef.records[0].text
+            else:
+                return True
+        except:
             return True
 
-        if tag_id in self.rider_database:
-            rider = self.rider_database[tag_id]
-            self.log_message(f"📖 エントリー受付: No.{rider['bib']} {rider['name']} (ID:{tag_id})", ft.Colors.GREEN_200)
-
-            packet = f"{json.dumps({'type':'ENTRY', 'id':tag_id})}\n".encode()
-            if self.ser and self.ser.is_open: self.ser.write(packet) 
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                s.sendto(packet, ("255.255.255.255", UDP_PORT))
-                s.close()
-            except: pass
-            
-            self.active_runners.append(tag_id)
-            self.is_nfc_locked = True
-            self.update_dashboard_counts()
+        if tag_id.strip().upper() in self.rider_database:
+            self.register_entry(tag_id, "NFC")
         else:
             self.log_message(f"⚠️ 未登録タグ: {tag_id} (CSVに登録されていません)", ft.Colors.YELLOW)
         self.page.update()
@@ -450,14 +626,22 @@ class MotoGymkhanaApp:
         self.page.update()
 
     def update_dashboard_counts(self):
-        self.runner_count_text.value = f"{len(self.active_runners)} 台"
+        on_course = [t for t in self.active_runners if t != self.pending_entry]
+        self.runner_count_text.value = f"{len(on_course)} 台"
         self.active_runners_row.controls.clear()
+        
         if self.active_runners:
             for tid in self.active_runners:
                 info = self.rider_database.get(tid, {"bib": "?", "name": "不明"})
-                chip = ft.Chip(label=ft.Text(f"No.{info.get('bib', '?')} {info.get('name', '不明')}", weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.ORANGE_800)
+                is_next = (tid == self.pending_entry)
+                chip = ft.Chip(
+                    label=ft.Text(("次走 " if is_next else "") + f"No.{info.get('bib', '?')} {info.get('name', '不明')}", weight=ft.FontWeight.BOLD),
+                    bgcolor=ft.Colors.BLUE_800 if is_next else ft.Colors.ORANGE_800,
+                )
                 self.active_runners_row.controls.append(chip)
-        else: self.active_runners_row.controls.append(ft.Text("待機なし", size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.ORANGE_400))
+        else:
+            self.active_runners_row.controls.append(ft.Text("待機なし", size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.ORANGE_400))
+            
         self.page.update()
 
     def refresh_com_ports(self):
@@ -472,10 +656,20 @@ class MotoGymkhanaApp:
 
     def connect_serial(self, e):
         try:
-            self.ser = serial.Serial(self.drop_com.value, 115200, timeout=0.5)
+            if self.ser and self.ser.is_open:
+                self.ser.close()   # 二重接続防止 (古い受信スレッドはこれで終了する)
+            ser = serial.Serial()
+            ser.port = self.drop_com.value
+            ser.baudrate = 115200
+            ser.timeout = 0.5
+            ser.dtr = False        # 接続時にATOMS3がリセットされるのを防ぐ
+            ser.rts = False
+            ser.open()
+            self.ser = ser
             self.log_message(f"✅ 接続成功: {self.drop_com.value}", ft.Colors.GREEN)
-            threading.Thread(target=self.serial_listener, daemon=True).start()
-        except Exception as err: self.log_message(f"❌ シリアル接続エラー: {err}", ft.Colors.RED)
+            threading.Thread(target=self.serial_listener, args=(ser,), daemon=True).start()
+        except Exception as err:
+            self.log_message(f"❌ シリアル接続エラー: {err}", ft.Colors.RED)
 
     def udp_listener(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -487,20 +681,28 @@ class MotoGymkhanaApp:
                 self.process_incoming_packet(data.decode('utf-8', 'ignore').strip(), "UDP")
         except: pass
 
-    def serial_listener(self):
-        while self.ser and self.ser.is_open:
-            if self.ser.in_waiting > 0:
-                line = self.ser.readline().decode('utf-8', 'ignore').strip()
-                if line == "SEQ_START" or "SEQ_START" in line:
-                    self.is_nfc_locked = False
-                    self.log_message("🚦 シグナル開始 (NFCロック解除)", ft.Colors.GREEN_400)
-                elif line == "FORCE_DNF" or "FORCE_DNF" in line:
-                    self.is_nfc_locked = False
-                    self.active_runners.clear()
-                    self.update_dashboard_counts()
-                    self.log_message("🛑 コースリセット (NFCロック解除 / 待機列クリア)", ft.Colors.ORANGE_400)
-                elif line.startswith("[ESP_DATA] "): 
-                    self.process_incoming_packet(line.replace("[ESP_DATA] ", ""), "SERIAL")
+    def serial_listener(self, ser):
+        while ser.is_open:
+            try:
+                if ser.in_waiting == 0:
+                    time.sleep(0.01)   # 待機中にCPUを使い切らない
+                    continue
+                line = ser.readline().decode('utf-8', 'ignore').strip()
+            except Exception as err:
+                if ser is self.ser:
+                    self.log_message(f"❌ シリアル切断: {err}", ft.Colors.RED)
+                break
+            if not line: continue
+
+            # 基板からのデータを最優先で判定 (中身の文字列で誤反応しないように)
+            if line.startswith("[ESP_DATA] "):
+                self.process_incoming_packet(line[len("[ESP_DATA] "):], "SERIAL")
+            elif line == "SEQ_START" or line == "[HUB_TX] SEQ_START":
+                self.on_seq_start()
+            elif line == "FORCE_DNF" or line == "[HUB_TX] FORCE_DNF":
+                self.on_force_dnf()
+            elif line.startswith("[ERROR]") or line.startswith("[HUB_READY]"):
+                self.log_message(f"🔌 ハブ: {line}", ft.Colors.GREY_400)
 
     def nfc_listener(self):
         while True:
